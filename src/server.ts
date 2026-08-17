@@ -22,7 +22,7 @@ import { getFoldedFile } from './tools/folded-file.js';
 export function createServer(): McpServer {
   const server = new McpServer({
     name: 'tokendiet',
-    version: '0.2.1',
+    version: '0.2.2',
   });
 
   // Shared root parameter schema

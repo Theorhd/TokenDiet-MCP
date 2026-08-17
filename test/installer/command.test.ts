@@ -2,11 +2,19 @@ import { describe, it, expect } from 'vitest';
 import { getMcpServerConfig } from '../../src/installer/utils/command.js';
 
 describe('getMcpServerConfig', () => {
-  it('generates npm npx command by default', () => {
+  it('generates npm npx command with @latest by default', () => {
     const config = getMcpServerConfig({ mode: 'npm' });
     expect(config).toEqual({
       command: 'npx',
-      args: ['-y', 'tokendiet-mcp'],
+      args: ['-y', 'tokendiet-mcp@latest'],
+    });
+  });
+
+  it('generates npm npx command with custom requested version', () => {
+    const config = getMcpServerConfig({ mode: 'npm', packageVersion: '0.2.1' });
+    expect(config).toEqual({
+      command: 'npx',
+      args: ['-y', 'tokendiet-mcp@0.2.1'],
     });
   });
 

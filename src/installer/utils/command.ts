@@ -29,8 +29,12 @@ export function getMcpServerConfig(options: InstallOptions = {}): ServerCommandC
   }
 
   // default 'npm'
+  const versionTag = options.packageVersion
+    ? (options.packageVersion.startsWith('@') ? options.packageVersion : `@${options.packageVersion}`)
+    : '@latest';
+
   return {
     command: 'npx',
-    args: ['-y', 'tokendiet-mcp'],
+    args: ['-y', `tokendiet-mcp${versionTag}`],
   };
 }

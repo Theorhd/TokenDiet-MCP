@@ -42,7 +42,7 @@ describe('ClaudeAdapter', () => {
     expect(mcpConfig.mcpServers.tokendiet).toEqual({
       type: 'stdio',
       command: 'npx',
-      args: ['-y', 'tokendiet-mcp'],
+      args: ['-y', 'tokendiet-mcp@latest'],
     });
 
     // 2. Verify SKILL.md

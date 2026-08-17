@@ -1,6 +1,6 @@
 {
   "name": "tokendiet-mcp",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "Token-efficient MCP server for codebase architecture exploration. Save 70-90% tokens when an AI agent needs to understand a project.",
   "type": "module",
   "main": "./dist/index.js",

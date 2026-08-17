@@ -39,7 +39,7 @@ describe('AntigravityAdapter', () => {
     const mcpConfig = JSON.parse(await fs.readFile(mcpConfigPath, 'utf-8'));
     expect(mcpConfig.mcpServers.tokendiet).toEqual({
       command: 'npx',
-      args: ['-y', 'tokendiet-mcp'],
+      args: ['-y', 'tokendiet-mcp@latest'],
     });
 
     // 2. Verify settings.json permissions

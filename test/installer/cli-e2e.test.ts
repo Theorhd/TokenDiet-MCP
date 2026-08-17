@@ -25,15 +25,15 @@ describe('CLI installer e2e', () => {
 
     // Check Claude
     const claudeMcp = JSON.parse(await fs.readFile(path.join(tmpHome, '.claude', '.mcp.json'), 'utf-8'));
-    expect(claudeMcp.mcpServers.tokendiet.args).toContain('tokendiet-mcp');
+    expect(claudeMcp.mcpServers.tokendiet.args).toContain('tokendiet-mcp@latest');
 
     // Check Antigravity
     const agyMcp = JSON.parse(await fs.readFile(path.join(tmpHome, '.gemini', 'config', 'mcp_config.json'), 'utf-8'));
-    expect(agyMcp.mcpServers.tokendiet.args).toContain('tokendiet-mcp');
+    expect(agyMcp.mcpServers.tokendiet.args).toContain('tokendiet-mcp@latest');
 
     // Check OpenCode
     const opencodeMcp = JSON.parse(await fs.readFile(path.join(tmpHome, '.config', 'opencode', 'config.json'), 'utf-8'));
-    expect(opencodeMcp.mcpServers.tokendiet.args).toContain('tokendiet-mcp');
+    expect(opencodeMcp.mcpServers.tokendiet.args).toContain('tokendiet-mcp@latest');
   });
 
   it('runs uninstall --all cleanly', async () => {

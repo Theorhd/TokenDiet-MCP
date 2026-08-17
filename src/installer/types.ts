@@ -4,6 +4,7 @@ export type InstallMode = 'npm' | 'github' | 'local';
 export interface InstallOptions {
   targets?: InstallTarget[];
   mode?: InstallMode;
+  packageVersion?: string; // e.g. "latest", "0.2.1"
   localDistPath?: string;
   githubRepo?: string;
   homeDir?: string;

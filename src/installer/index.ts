@@ -95,6 +95,18 @@ export async function runInstallerCli(
     ...overrideOptions,
   };
 
+  for (let i = 1; i < args.length; i++) {
+    const arg = args[i];
+    if ((arg === '--version-tag' || arg === '--package-version') && args[i + 1]) {
+      options.packageVersion = args[i + 1];
+      i++;
+    } else if (arg.startsWith('--version-tag=')) {
+      options.packageVersion = arg.split('=')[1];
+    } else if (arg.startsWith('--package-version=')) {
+      options.packageVersion = arg.split('=')[1];
+    }
+  }
+
   if (flags.has('--local')) {
     options.mode = 'local';
   } else if (flags.has('--github')) {
@@ -238,7 +250,8 @@ Targets:
   --opencode                Configure OpenCode
 
 Installation Modes:
-  --npm                     Use published npm package (npx -y tokendiet-mcp) [Default]
+  --npm                     Use published npm package (npx -y tokendiet-mcp@latest) [Default]
+  --version-tag <tag>       Specify custom version (e.g. 0.2.1, latest)
   --github                  Use GitHub repository directly (npx -y github:theorhd/TokenDiet)
   --local                   Use local build path (node /path/to/dist/index.js)
 

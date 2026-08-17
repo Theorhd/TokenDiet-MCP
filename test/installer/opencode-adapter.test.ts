@@ -39,7 +39,7 @@ describe('OpenCodeAdapter', () => {
     const config = JSON.parse(await fs.readFile(configPath, 'utf-8'));
     expect(config.mcpServers.tokendiet).toEqual({
       command: 'npx',
-      args: ['-y', 'tokendiet-mcp'],
+      args: ['-y', 'tokendiet-mcp@latest'],
     });
 
     // 2. Verify rules/tokendiet.md
