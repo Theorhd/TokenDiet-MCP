@@ -4,28 +4,80 @@
 
 Instead of reading every file, the agent calls TokenDiet tools that return concise, structured, architecture-focused summaries.
 
-## Installation
+---
+
+## ⚡ Automated 1-Click Installation (Zero-Clone)
+
+Install TokenDiet MCP and its **SKILL.md / Rules** into your AI coding assistant in a single command — **no git clone required**:
+
+### Option 1: Via NPX (Interactive or Direct)
 
 ```bash
-npm install -g tokendiet-mcp
+# Interactive setup (select your tools)
+npx -y tokendiet-mcp install
+
+# Or install automatically in all detected tools (Claude Code, Antigravity, OpenCode)
+npx -y tokendiet-mcp install --all
+
+# Or target specific tools
+npx -y tokendiet-mcp install --claude
+npx -y tokendiet-mcp install --antigravity
+npx -y tokendiet-mcp install --opencode
 ```
 
-Or run without installing:
+> **Direct from GitHub without npm:**  
+> `npx github:theorhd/TokenDiet install --all`
+
+### Option 2: Via Curl One-Liner
+
 ```bash
-npx tokendiet-mcp
+curl -fsSL https://raw.githubusercontent.com/theorhd/TokenDiet/main/scripts/install.sh | bash
+```
+
+### Check Installation Status or Uninstall
+
+```bash
+# Check status across all tools
+npx -y tokendiet-mcp status
+
+# Uninstall cleanly
+npx -y tokendiet-mcp uninstall --all
+```
+
+---
+
+## 🛠️ Local Development Installation (Cloned Repo)
+
+If you clone the repository locally to work on TokenDiet:
+
+```bash
+git clone https://github.com/theorhd/TokenDiet.git
+cd TokenDiet
+npm install
+npm run build
+
+# Install into all tools pointing to your local build (dist/index.js)
+npm run install:all
+
+# Or target specific tools
+npm run install:claude
+npm run install:antigravity
+npm run install:opencode
 ```
 
 **Requires Node.js >= 22.13** (for built-in SQLite).
 
-## Claude Code Setup
+---
 
-```bash
-# Global install
-claude mcp add tokendiet -- tokendiet
+## 🎯 Supported Environments & What Is Configured
 
-# Or with npx (no global install)
-claude mcp add tokendiet -- npx -y tokendiet-mcp
-```
+| Tool | MCP Configuration | SKILL.md / Rules Configured |
+| :--- | :--- | :--- |
+| **Claude Code** | `~/.claude/.mcp.json` & `~/.claude.json` | `~/.claude/skills/tokendiet-mcp/SKILL.md` + `~/.claude/CLAUDE.md` |
+| **Google Antigravity** *(IDE & CLI)* | `~/.gemini/config/mcp_config.json` + permissions | `~/.gemini/config/skills/tokendiet-mcp/SKILL.md` + `~/.gemini/config/rules/tokendiet-mcp.md` |
+| **OpenCode** | `~/.config/opencode/config.json` | `~/.config/opencode/rules/tokendiet.md` |
+
+---
 
 ## Tools (16 total)
 
@@ -107,7 +159,7 @@ Environment variables:
 ```bash
 npm install
 npm run dev        # Run with tsx (hot reload)
-npm run build      # Build with tsup
+npm run build      # Build with tsup + bundle embedded skill
 npm test           # Run tests
 ```
 
