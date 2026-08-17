@@ -38,6 +38,11 @@ export class AntigravityAdapter implements TargetAdapter {
       skillDir: path.join(home, '.gemini', 'config', 'skills', 'tokendiet-mcp'),
       skillFile: path.join(home, '.gemini', 'config', 'skills', 'tokendiet-mcp', 'SKILL.md'),
       ruleFile: path.join(home, '.gemini', 'config', 'rules', 'tokendiet-mcp.md'),
+      mcpCacheDirs: [
+        path.join(home, '.gemini', 'antigravity-ide', 'mcp', 'tokendiet'),
+        path.join(home, '.gemini', 'antigravity-cli', 'mcp', 'tokendiet'),
+        path.join(home, '.gemini', 'antigravity', 'mcp', 'tokendiet'),
+      ],
     };
   }
 
@@ -102,6 +107,13 @@ export class AntigravityAdapter implements TargetAdapter {
       await fs.writeFile(paths.ruleFile, skillContent, 'utf-8');
       filesUpdated.push(paths.ruleFile);
 
+      // 5. Clear stale tool cache in Antigravity directories so it refreshes all 16 tools
+      for (const cacheDir of paths.mcpCacheDirs) {
+        try {
+          await fs.rm(cacheDir, { recursive: true, force: true });
+        } catch {}
+      }
+
       return {
         target: this.name,
         displayName: this.displayName,
@@ -154,6 +166,14 @@ export class AntigravityAdapter implements TargetAdapter {
         await fs.rm(paths.ruleFile, { force: true });
         filesUpdated.push(paths.ruleFile);
       } catch {}
+
+      // 4. Remove cached MCP schemas
+      for (const cacheDir of paths.mcpCacheDirs) {
+        try {
+          await fs.rm(cacheDir, { recursive: true, force: true });
+          filesUpdated.push(cacheDir);
+        } catch {}
+      }
 
       return {
         target: this.name,
