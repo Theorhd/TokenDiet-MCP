@@ -65,6 +65,7 @@ export class CacheManager {
     this.dbPath = join(cacheDir, `${rootHash}.db`);
     this.db = new DatabaseSync(this.dbPath);
     this.db.exec('PRAGMA journal_mode=WAL');
+    this.db.exec('PRAGMA busy_timeout=5000');
     this.db.exec('PRAGMA foreign_keys=ON');
     this.initSchema();
   }
@@ -110,6 +111,18 @@ export class CacheManager {
     this.db.close();
   }
 
+  withTransaction<T>(fn: () => T): T {
+    this.db.exec('BEGIN');
+    try {
+      const result = fn();
+      this.db.exec('COMMIT');
+      return result;
+    } catch (err) {
+      this.db.exec('ROLLBACK');
+      throw err;
+    }
+  }
+
   // ─── Meta ─────────────────────────────────────────────────────
   private getMeta(key: string): string | undefined {
     const stmt = this.db.prepare('SELECT value FROM meta WHERE key = ?');
@@ -139,12 +152,13 @@ export class CacheManager {
     precision: Precision,
     symbols?: SymbolInfo[],
     imports?: ImportInfo[],
+    purpose: string = '',
   ): void {
     const upsert = this.db.prepare(`
-      INSERT OR REPLACE INTO files (path, mtime, size, lang, tier, lines, bytes, precision)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT OR REPLACE INTO files (path, mtime, size, lang, tier, lines, bytes, precision, purpose)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
-    upsert.run(path, mtime, size, lang, tier, lines, bytes, precision);
+    upsert.run(path, mtime, size, lang, tier, lines, bytes, precision, purpose);
 
     // Clear old symbols/imports
     this.db.prepare('DELETE FROM symbols WHERE file_path = ?').run(path);
@@ -171,9 +185,9 @@ export class CacheManager {
     }
   }
 
-  getFileOverview(path: string): { lang: string; lines: number; bytes: number; precision: string; symbols: SymbolInfo[] } | null {
-    const fileStmt = this.db.prepare('SELECT lang, lines, bytes, precision FROM files WHERE path = ?');
-    const fileRow = fileStmt.get(path) as { lang: string; lines: number; bytes: number; precision: string } | undefined;
+  getFileOverview(path: string): { lang: string; purpose: string; lines: number; bytes: number; precision: string; symbols: SymbolInfo[]; imports: ImportInfo[] } | null {
+    const fileStmt = this.db.prepare('SELECT lang, lines, bytes, precision, purpose FROM files WHERE path = ?');
+    const fileRow = fileStmt.get(path) as { lang: string; lines: number; bytes: number; precision: string; purpose: string } | undefined;
     if (!fileRow) return null;
 
     const symStmt = this.db.prepare('SELECT name, kind, signature, line, doc, exported FROM symbols WHERE file_path = ? ORDER BY line');
@@ -187,12 +201,23 @@ export class CacheManager {
       exported: !!(r.exported as number),
     }));
 
+    const impStmt = this.db.prepare('SELECT from_path, names, is_external FROM imports WHERE file_path = ?');
+    const impRows = impStmt.all(path) as Array<Record<string, unknown>>;
+    const imports: ImportInfo[] = impRows.map(r => ({
+      from: r.from_path as string,
+      names: (r.names as string ? (r.names as string).split(',').filter(Boolean) : []),
+      isExternal: (r.is_external as number) === 1,
+      isDefault: false,
+    }));
+
     return {
       lang: fileRow.lang,
+      purpose: fileRow.purpose || '',
       lines: fileRow.lines,
       bytes: fileRow.bytes,
       precision: fileRow.precision,
       symbols,
+      imports,
     };
   }
 
@@ -209,18 +234,29 @@ export class CacheManager {
     }));
   }
 
-  searchSymbols(query: string, kind?: string, limit = 30): { name: string; kind: string; file: string; line: number; signature: string; exported: number }[] {
+  searchSymbols(
+    query: string,
+    kind?: string,
+    limit = 30,
+    filePattern?: string,
+  ): { name: string; kind: string; file: string; line: number; signature: string; exported: number }[] {
     const likeQuery = `%${query}%`;
-    let sql: string;
-    let params: string[];
+    const conditions: string[] = ['name LIKE ?'];
+    const params: string[] = [likeQuery];
 
     if (kind && kind !== 'all') {
-      sql = 'SELECT name, kind, file_path as file, line, signature, exported FROM symbols WHERE name LIKE ? AND kind = ? LIMIT ?';
-      params = [likeQuery, kind, String(limit)];
-    } else {
-      sql = 'SELECT name, kind, file_path as file, line, signature, exported FROM symbols WHERE name LIKE ? LIMIT ?';
-      params = [likeQuery, String(limit)];
+      conditions.push('kind = ?');
+      params.push(kind);
     }
+
+    if (filePattern) {
+      const sqlPattern = filePattern.replace(/\*\*/g, '%').replace(/\*/g, '%');
+      conditions.push('file_path LIKE ?');
+      params.push(`%${sqlPattern}%`);
+    }
+
+    const sql = `SELECT name, kind, file_path as file, line, signature, exported FROM symbols WHERE ${conditions.join(' AND ')} LIMIT ?`;
+    params.push(String(limit));
 
     const stmt = this.db.prepare(sql);
     return stmt.all(...params) as { name: string; kind: string; file: string; line: number; signature: string; exported: number }[];
@@ -234,14 +270,21 @@ export class CacheManager {
   removeStaleFiles(validPaths: Set<string>): number {
     const stmt = this.db.prepare('SELECT path FROM files');
     const allFiles = stmt.all() as { path: string }[];
-    let removed = 0;
+    const toDelete: string[] = [];
     for (const { path } of allFiles) {
       if (!validPaths.has(path)) {
-        this.db.prepare('DELETE FROM files WHERE path = ?').run(path);
-        removed++;
+        toDelete.push(path);
       }
     }
-    return removed;
+    if (toDelete.length > 0) {
+      const deleteStmt = this.db.prepare('DELETE FROM files WHERE path = ?');
+      this.withTransaction(() => {
+        for (const path of toDelete) {
+          deleteStmt.run(path);
+        }
+      });
+    }
+    return toDelete.length;
   }
 
   getStats(): { fileCount: number; indexedBytes: number } {
