@@ -21,7 +21,7 @@ export function getMcpServerConfig(options: InstallOptions = {}): ServerCommandC
   }
 
   if (mode === 'github') {
-    const repo = options.githubRepo || 'theorhd/TokenDiet';
+    const repo = options.githubRepo || 'Theorhd/TokenDiet-MCP';
     return {
       command: 'npx',
       args: ['-y', `github:${repo}`],

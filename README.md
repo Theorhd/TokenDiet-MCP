@@ -26,12 +26,12 @@ npx -y tokendiet-mcp install --opencode
 ```
 
 > **Direct from GitHub without npm:**  
-> `npx github:theorhd/TokenDiet install --all`
+> `npx github:Theorhd/TokenDiet-MCP install --all`
 
 ### Option 2: Via Curl One-Liner
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/theorhd/TokenDiet/main/scripts/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/Theorhd/TokenDiet-MCP/main/scripts/install.sh | bash
 ```
 
 ### Check Installation Status or Uninstall
@@ -51,8 +51,8 @@ npx -y tokendiet-mcp uninstall --all
 If you clone the repository locally to work on TokenDiet:
 
 ```bash
-git clone https://github.com/theorhd/TokenDiet.git
-cd TokenDiet
+git clone https://github.com/Theorhd/TokenDiet-MCP.git
+cd TokenDiet-MCP
 npm install
 npm run build
 

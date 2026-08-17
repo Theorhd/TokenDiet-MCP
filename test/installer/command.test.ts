@@ -19,10 +19,10 @@ describe('getMcpServerConfig', () => {
   });
 
   it('generates github npx command when mode is github', () => {
-    const config = getMcpServerConfig({ mode: 'github', githubRepo: 'theorhd/TokenDiet' });
+    const config = getMcpServerConfig({ mode: 'github' });
     expect(config).toEqual({
       command: 'npx',
-      args: ['-y', 'github:theorhd/TokenDiet'],
+      args: ['-y', 'github:Theorhd/TokenDiet-MCP'],
     });
   });
 

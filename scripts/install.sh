@@ -3,8 +3,8 @@ set -e
 
 # TokenDiet One-Liner Installer
 # Usage:
-#   curl -fsSL https://raw.githubusercontent.com/theorhd/TokenDiet/main/scripts/install.sh | bash
-#   curl -fsSL https://raw.githubusercontent.com/theorhd/TokenDiet/main/scripts/install.sh | bash -s -- --all
+#   curl -fsSL https://raw.githubusercontent.com/Theorhd/TokenDiet-MCP/main/scripts/install.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/Theorhd/TokenDiet-MCP/main/scripts/install.sh | bash -s -- --all
 
 echo "🍽️  TokenDiet — Automated MCP & Skill Installer"
 echo "==============================================="

@@ -252,7 +252,7 @@ Targets:
 Installation Modes:
   --npm                     Use published npm package (npx -y tokendiet-mcp@latest) [Default]
   --version-tag <tag>       Specify custom version (e.g. 0.2.1, latest)
-  --github                  Use GitHub repository directly (npx -y github:theorhd/TokenDiet)
+  --github                  Use GitHub repository directly (npx -y github:Theorhd/TokenDiet-MCP)
   --local                   Use local build path (node /path/to/dist/index.js)
 
 Options:
