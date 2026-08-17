@@ -1,0 +1,325 @@
+import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
+import { z } from 'zod';
+import { CacheManager } from './core/cache.js';
+import { getProjectSummary } from './tools/project-summary.js';
+import { getDirectoryTree } from './tools/directory-tree.js';
+import { getFileOverview } from './tools/file-overview.js';
+import { getModuleGraph } from './tools/module-graph.js';
+import { searchSymbols } from './tools/search-symbols.js';
+import { getConfigDigest } from './tools/config-digest.js';
+import { getEntryPoints } from './tools/entry-points.js';
+import { getArchitectureNotes } from './tools/architecture-notes.js';
+import { refreshIndex } from './tools/refresh.js';
+import { findDeadCode } from './tools/find-dead-code.js';
+import { getGlobalProject } from './tools/global-project.js';
+
+export function createServer(): McpServer {
+  const server = new McpServer({
+    name: 'tokendiet',
+    version: '0.1.0',
+  });
+
+  // Shared root parameter schema
+  const rootSchema = z.object({
+    root: z.string().optional().describe('Project root directory (absolute path). Defaults to current working directory.'),
+  });
+
+  // ── 1. get_project_summary ────────────────────────────────────
+  server.registerTool(
+    'get_project_summary',
+    {
+      description: 'Get a high-level overview of the project: languages, frameworks, build system, structure, and stats. Call this FIRST when exploring a new project.',
+      inputSchema: rootSchema.extend({
+        refresh: z.boolean().optional().default(false).describe('Force full re-index'),
+      }),
+    },
+    async (params) => {
+      const cache = new CacheManager(params.root ?? process.cwd());
+      try {
+        const result = await getProjectSummary(params.root, cache, params.refresh);
+        return {
+          content: [{ type: 'text', text: JSON.stringify(result) }],
+        };
+      } finally {
+        cache.close();
+      }
+    },
+  );
+
+  // ── 2. get_directory_tree ─────────────────────────────────────
+  server.registerTool(
+    'get_directory_tree',
+    {
+      description: 'Get a visual directory tree of the project. Shows file types, sizes, and entry points. Respects .gitignore.',
+      inputSchema: rootSchema.extend({
+        depth: z.number().optional().default(3).describe('Maximum depth to traverse (1-8)'),
+        dirsOnly: z.boolean().optional().default(false).describe('Only show directories'),
+        includeTests: z.boolean().optional().default(true).describe('Include test files and directories'),
+        maxEntries: z.number().optional().default(200).describe('Maximum number of entries to return'),
+        format: z.enum(['text', 'json']).optional().default('text').describe('Output format: text (token-efficient) or json'),
+      }),
+    },
+    async (params) => {
+      const cache = new CacheManager(params.root ?? process.cwd());
+      try {
+        const result = await getDirectoryTree(params.root, cache, {
+          depth: params.depth,
+          dirsOnly: params.dirsOnly,
+          includeTests: params.includeTests,
+          maxEntries: params.maxEntries,
+          format: params.format,
+        });
+        return {
+          content: [{ type: 'text', text: result }],
+        };
+      } finally {
+        cache.close();
+      }
+    },
+  );
+
+  // ── 3. get_file_overview ─────────────────────────────────────
+  server.registerTool(
+    'get_file_overview',
+    {
+      description: 'Get a structured overview of a file: exported symbols (functions, classes, types, interfaces), imports, and purpose. No implementation code — signatures only. Token-efficient alternative to reading the file.',
+      inputSchema: z.object({
+        path: z.string().describe('Path to the file, relative to project root or absolute'),
+        root: z.string().optional().describe('Project root directory'),
+        detail: z.enum(['signatures', 'names', 'bodies']).optional().default('signatures').describe('Detail level: signatures (default), names only, or bodies (first few lines)'),
+        maxSymbols: z.number().optional().default(100).describe('Maximum symbols to return'),
+      }),
+    },
+    async (params) => {
+      const cache = new CacheManager(params.root ?? process.cwd());
+      try {
+        const result = await getFileOverview(params.root, cache, {
+          path: params.path,
+          detail: params.detail,
+          maxSymbols: params.maxSymbols,
+        });
+        return {
+          content: [{ type: 'text', text: JSON.stringify(result) }],
+        };
+      } finally {
+        cache.close();
+      }
+    },
+  );
+
+  // ── 4. get_module_graph ───────────────────────────────────────
+  server.registerTool(
+    'get_module_graph',
+    {
+      description: 'Get the import/export dependency graph between modules. Shows how files depend on each other, external dependencies, hubs (high in-degree), and cycles.',
+      inputSchema: rootSchema.extend({
+        module: z.string().optional().describe('Focus on a specific module (file or directory path)'),
+        depth: z.number().optional().default(2).describe('How deep to traverse dependencies'),
+        direction: z.enum(['out', 'in', 'both']).optional().default('out').describe('Dependency direction: out (what this imports), in (what imports this), both'),
+        maxEdges: z.number().optional().default(200).describe('Maximum edges to return'),
+        aggregate: z.boolean().optional().default(true).describe('Aggregate by directory for whole-project view'),
+      }),
+    },
+    async (params) => {
+      const cache = new CacheManager(params.root ?? process.cwd());
+      try {
+        const result = await getModuleGraph(params.root, cache, {
+          module: params.module,
+          depth: params.depth,
+          direction: params.direction,
+          maxEdges: params.maxEdges,
+          aggregate: params.aggregate,
+        });
+        return {
+          content: [{ type: 'text', text: JSON.stringify(result) }],
+        };
+      } finally {
+        cache.close();
+      }
+    },
+  );
+
+  // ── 5. search_symbols ─────────────────────────────────────────
+  server.registerTool(
+    'search_symbols',
+    {
+      description: 'Search for symbols (functions, classes, interfaces, etc.) by name across the entire project. Case-insensitive, supports * globs.',
+      inputSchema: rootSchema.extend({
+        query: z.string().describe('Symbol name to search for (case-insensitive, supports * glob)'),
+        kind: z.enum(['function', 'class', 'interface', 'type', 'enum', 'const', 'struct', 'trait', 'method', 'all']).optional().default('all').describe('Filter by symbol kind'),
+        language: z.string().optional().describe('Filter by language (typescript, javascript, python, go, rust, java, ruby)'),
+        filePattern: z.string().optional().describe('Filter by file pattern (e.g., "*.ts", "src/**")'),
+        limit: z.number().optional().default(30).describe('Maximum results'),
+      }),
+    },
+    async (params) => {
+      const cache = new CacheManager(params.root ?? process.cwd());
+      try {
+        const result = await searchSymbols(params.root, cache, {
+          query: params.query,
+          kind: params.kind,
+          language: params.language,
+          filePattern: params.filePattern,
+          limit: params.limit,
+        });
+        return {
+          content: [{ type: 'text', text: JSON.stringify(result) }],
+        };
+      } finally {
+        cache.close();
+      }
+    },
+  );
+
+  // ── 6. get_config_digest ──────────────────────────────────────
+  server.registerTool(
+    'get_config_digest',
+    {
+      description: 'Parse and summarize configuration files (package.json, tsconfig, Cargo.toml, etc.). Returns only the architecturally-relevant settings, not the full file.',
+      inputSchema: rootSchema.extend({
+        path: z.string().optional().describe('Path to a specific config file. If omitted, auto-detects all common config files.'),
+      }),
+    },
+    async (params) => {
+      const cache = new CacheManager(params.root ?? process.cwd());
+      try {
+        const result = await getConfigDigest(params.root, cache, {
+          path: params.path,
+        });
+        return {
+          content: [{ type: 'text', text: JSON.stringify(result) }],
+        };
+      } finally {
+        cache.close();
+      }
+    },
+  );
+
+  // ── 7. get_entry_points ───────────────────────────────────────
+  server.registerTool(
+    'get_entry_points',
+    {
+      description: 'Identify how to enter and run the application: main files, CLI commands, API routes, test directories.',
+      inputSchema: rootSchema,
+    },
+    async (params) => {
+      const cache = new CacheManager(params.root ?? process.cwd());
+      try {
+        const result = await getEntryPoints(params.root, cache);
+        return {
+          content: [{ type: 'text', text: JSON.stringify(result) }],
+        };
+      } finally {
+        cache.close();
+      }
+    },
+  );
+
+  // ── 8. get_architecture_notes ─────────────────────────────────
+  server.registerTool(
+    'get_architecture_notes',
+    {
+      description: 'Extract architecture documentation if it exists (ARCHITECTURE.md, ADRs, design docs). Returns headings, key concepts, and excerpts — not the full documents.',
+      inputSchema: rootSchema.extend({
+        maxWords: z.number().optional().default(800).describe('Maximum words per source document'),
+      }),
+    },
+    async (params) => {
+      const cache = new CacheManager(params.root ?? process.cwd());
+      try {
+        const result = await getArchitectureNotes(params.root, cache, {
+          maxWords: params.maxWords,
+        });
+        return {
+          content: [{ type: 'text', text: JSON.stringify(result) }],
+        };
+      } finally {
+        cache.close();
+      }
+    },
+  );
+
+  // ── 9. refresh_index ──────────────────────────────────────────
+  server.registerTool(
+    'refresh_index',
+    {
+      description: 'Force a full re-index of the project. Call after major refactors or when the cache seems stale.',
+      inputSchema: rootSchema,
+    },
+    async (params) => {
+      const cache = new CacheManager(params.root ?? process.cwd());
+      try {
+        const result = await refreshIndex(params.root, cache);
+        return {
+          content: [{ type: 'text', text: JSON.stringify(result) }],
+        };
+      } finally {
+        cache.close();
+      }
+    },
+  );
+
+  // ── 10. find_dead_code ─────────────────────────────────────────
+  server.registerTool(
+    'find_dead_code',
+    {
+      description: 'Find potentially dead code: exported symbols never imported by other files, and files never imported by any other file. Uses the cached import graph when available — run refresh_index first on large projects. Results are candidates, not certainties — always verify before deleting.',
+      inputSchema: rootSchema.extend({
+        includeTests: z.boolean().optional().default(false).describe('Include test files in the analysis'),
+        ignorePatterns: z.array(z.string()).optional().describe('Glob patterns for files to skip (e.g., "src/generated/**")'),
+        minConfidence: z.enum(['high', 'medium']).optional().default('medium').describe('Minimum confidence threshold. "high" returns only exports from files with zero incoming imports. "medium" also returns exports whose names are never imported directly (may include namespace-imported symbols).'),
+      }),
+    },
+    async (params) => {
+      const cache = new CacheManager(params.root ?? process.cwd());
+      try {
+        const result = await findDeadCode(params.root, cache, {
+          includeTests: params.includeTests,
+          ignorePatterns: params.ignorePatterns,
+          minConfidence: params.minConfidence,
+        });
+        return {
+          content: [{ type: 'text', text: JSON.stringify(result) }],
+        };
+      } finally {
+        cache.close();
+      }
+    },
+  );
+
+  // ── 11. get_global_project ─────────────────────────────────────
+  server.registerTool(
+    'get_global_project',
+    {
+      description: 'Get everything you need to understand a project in a single call. Bundles get_project_summary + get_directory_tree + get_config_digest + get_entry_points. Call this FIRST when exploring a new project — replaces calling those 4 tools individually. Saves 4 round-trips.',
+      inputSchema: rootSchema.extend({
+        refresh: z.boolean().optional().default(false).describe('Force full re-index before analysis'),
+        depth: z.number().optional().default(3).describe('Directory tree depth (1-8)'),
+      }),
+    },
+    async (params) => {
+      const cache = new CacheManager(params.root ?? process.cwd());
+      try {
+        const result = await getGlobalProject(params.root, cache, {
+          refresh: params.refresh,
+          depth: params.depth,
+        });
+        return {
+          content: [{ type: 'text', text: JSON.stringify(result) }],
+        };
+      } finally {
+        cache.close();
+      }
+    },
+  );
+
+  return server;
+}
+
+export async function startServer(): Promise<void> {
+  const server = createServer();
+  const transport = new StdioServerTransport();
+  await server.connect(transport);
+  console.error('TokenDiet MCP server running on stdio');
+}
