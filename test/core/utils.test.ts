@@ -5,8 +5,10 @@ import {
   estimateTokens,
   enforceTokenBudget,
   extractPackageName,
-  formatBytes
+  formatBytes,
+  resolveImportPath
 } from '../../src/core/utils.js';
+import { resolve } from 'node:path';
 
 describe('utils', () => {
   describe('truncate', () => {
@@ -87,6 +89,25 @@ This is a python docstring. With multiple sentences.
 
     it('formats bytes >= 1MB as MB', () => {
       expect(formatBytes(1572864)).toBe('1.5MB');
+    });
+  });
+
+  describe('resolveImportPath', () => {
+    it('returns empty for external imports', () => {
+      expect(resolveImportPath('/app/src/index.ts', 'express')).toEqual([]);
+      expect(resolveImportPath('/app/src/index.ts', '@modelcontextprotocol/sdk')).toEqual([]);
+    });
+
+    it('resolves TypeScript ESM .js relative import to .ts source file', () => {
+      const serverFile = resolve(process.cwd(), 'src/server.ts');
+      const candidates = resolveImportPath(serverFile, './core/cache.js');
+      expect(candidates.some(c => c.endsWith('src/core/cache.ts'))).toBe(true);
+    });
+
+    it('resolves directory import with /index.ts', () => {
+      const serverFile = resolve(process.cwd(), 'src/server.ts');
+      const candidates = resolveImportPath(serverFile, './types');
+      expect(candidates.some(c => c.endsWith('src/types/index.ts'))).toBe(true);
     });
   });
 });
