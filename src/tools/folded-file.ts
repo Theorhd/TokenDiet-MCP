@@ -56,7 +56,11 @@ export async function getFoldedFile(
       let braceCount = 0;
       let started = false;
       for (let i = startLineIdx; i < lines.length; i++) {
-        const line = lines[i] ?? '';
+        let line = lines[i] ?? '';
+        const commentIdx = line.indexOf('//');
+        if (commentIdx !== -1) {
+          line = line.slice(0, commentIdx);
+        }
         for (let c = 0; c < line.length; c++) {
           if (line[c] === '{') {
             braceCount++;
