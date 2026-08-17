@@ -70,16 +70,24 @@ export class ClaudeAdapter implements TargetAdapter {
         await fs.access(paths.claudeJson);
         await mergeJsonFile(
           paths.claudeJson,
-          (current) => ({
-            ...current,
-            mcpServers: {
-              ...(current.mcpServers || {}),
-              tokendiet: {
-                type: 'stdio',
-                ...serverConfig,
+          (current) => {
+            // Clean up any legacy per-project tokendiet configurations to prevent scope conflicts
+            for (const key of Object.keys(current)) {
+              if (current[key] && typeof current[key] === 'object' && current[key].mcpServers?.tokendiet) {
+                delete current[key].mcpServers.tokendiet;
+              }
+            }
+            return {
+              ...current,
+              mcpServers: {
+                ...(current.mcpServers || {}),
+                tokendiet: {
+                  type: 'stdio',
+                  ...serverConfig,
+                },
               },
-            },
-          }),
+            };
+          },
           { backup: options.backup ?? true }
         );
         filesUpdated.push(paths.claudeJson);
@@ -154,6 +162,11 @@ export class ClaudeAdapter implements TargetAdapter {
         await removeJsonKey(paths.claudeJson, (current) => {
           if (current.mcpServers) {
             delete current.mcpServers.tokendiet;
+          }
+          for (const key of Object.keys(current)) {
+            if (current[key] && typeof current[key] === 'object' && current[key].mcpServers?.tokendiet) {
+              delete current[key].mcpServers.tokendiet;
+            }
           }
         });
         filesUpdated.push(paths.claudeJson);
