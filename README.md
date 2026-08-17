@@ -27,7 +27,7 @@ claude mcp add tokendiet -- tokendiet
 claude mcp add tokendiet -- npx -y tokendiet-mcp
 ```
 
-## Tools (11 total)
+## Tools (16 total)
 
 | # | Tool | Purpose |
 |---|------|---------|
@@ -42,19 +42,28 @@ claude mcp add tokendiet -- npx -y tokendiet-mcp
 | 8 | `get_architecture_notes` | Architecture docs, ADRs, design notes — excerpts not full docs |
 | 9 | `refresh_index` | Force full re-index after major changes |
 | 10 | `find_dead_code` | Detect unused exports and files with no incoming imports |
+| 11 | `get_symbol_body` | 🎯 Extract only the implementation body & doc of a specific function/class |
+| 12 | `get_type_definitions` | 🧬 Extract and aggregate all types, interfaces, structs, and schemas |
+| 13 | `get_symbol_references` | 🔍 Find all usages and references of a symbol across the codebase |
+| 14 | `get_changed_symbols` | 📝 Semantic Git diff: added, modified, and removed symbols per file |
+| 15 | `get_folded_file` | ✂️ File outline with folded implementation bodies ({ /* ... N lines */ }) |
 
 ## Agent Usage Workflow
 
-When an AI agent explores a new project, it should call tools in this order:
+When an AI agent explores and works on a project, it should call tools in this order:
 
 ```
 0. get_global_project      ← ⚡ ALWAYS FIRST. One call = summary + tree + configs + entry points
-1. search_symbols          ← Find specific code
-2. get_file_overview       ← Understand a file
-3. get_module_graph        ← Trace dependencies
-4. get_architecture_notes  ← Design docs
-5. find_dead_code          ← Detect unused code
-6. refresh_index           ← Re-index after changes
+1. search_symbols          ← Find specific code by name
+2. get_file_overview       ← Understand file structure & exports (signatures only)
+3. get_type_definitions    ← Inspect shared interfaces, types, and data models
+4. get_symbol_body         ← Read ONLY the function/class implementation needed
+5. get_symbol_references   ← Check who calls or depends on a symbol
+6. get_module_graph        ← Trace project-wide module dependencies
+7. get_folded_file         ← View full file skeleton with collapsed implementations
+8. get_changed_symbols     ← Review semantic git changes before commit
+9. find_dead_code          ← Detect unused exports and dead files
+10. refresh_index          ← Re-index after major changes
 ```
 
 See [SKILL.md](./SKILL.md) for the full agent instruction manual.
@@ -62,7 +71,7 @@ See [SKILL.md](./SKILL.md) for the full agent instruction manual.
 ## How It Works
 
 1. **Walker** scans the project respecting `.gitignore` (via the `ignore` package)
-2. **Parsers** extract symbols using regex (TypeScript/JS, Python, Go, Rust supported; tree-sitter WASM as tier-1, regex as fallback)
+2. **Parsers** extract symbols and structure using regex (TypeScript/JS, Python, Go, Rust supported)
 3. **SQLite cache** persists parsed results in `~/Library/Caches/tokendiet/<hash>.db`
 4. **Tools** query the cache and return compact JSON optimized for AI consumption
 
@@ -73,6 +82,11 @@ See [SKILL.md](./SKILL.md) for the full agent instruction manual.
 | Understand project structure (4 calls) | ~5,000 tokens (read configs + explore dirs) | ~2,000 tokens (summary + tree + configs + entry points) | **60%** |
 | Understand project structure (1 call) | ~5,000 tokens (read configs + explore dirs) | ~800 tokens (get_global_project) | **84%** |
 | Understand a file | ~3,000 tokens (read full file) | ~300 tokens (file_overview) | **90%** |
+| Read a specific function / method | ~3,000-8,000 tokens (read whole file) | ~200 tokens (get_symbol_body) | **95%** |
+| Extract types / schemas across project | ~6,000 tokens (read multiple type files) | ~500 tokens (get_type_definitions) | **92%** |
+| Trace symbol usages / references | ~8,000 tokens (multiple grep + reads) | ~400 tokens (get_symbol_references) | **95%** |
+| Inspect Git changes | ~4,000 tokens (raw git diff) | ~400 tokens (get_changed_symbols) | **90%** |
+| View file outline with code folded | ~3,000 tokens (read full file) | ~500 tokens (get_folded_file) | **83%** |
 | Find where X is defined | ~5,000 tokens (grep + read files) | ~300 tokens (search_symbols + file_overview) | **94%** |
 | Trace dependencies | ~10,000 tokens (follow imports manually) | ~800 tokens (module_graph) | **92%** |
 | Find dead code | ~15,000 tokens (grep + manually trace every import) | ~500 tokens (find_dead_code) | **97%** |
