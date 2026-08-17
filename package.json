@@ -1,6 +1,6 @@
 {
   "name": "tokendiet-mcp",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Token-efficient MCP server for codebase architecture exploration. Save 70-90% tokens when an AI agent needs to understand a project.",
   "type": "module",
   "main": "./dist/index.js",
@@ -9,7 +9,9 @@
     "tokendiet-mcp": "dist/index.js"
   },
   "files": [
-    "dist"
+    "dist",
+    "SKILL.md",
+    "scripts/install.sh"
   ],
   "scripts": {
     "build": "node scripts/generate-embedded-skill.cjs && tsup && node scripts/fix-sqlite-import.cjs",
