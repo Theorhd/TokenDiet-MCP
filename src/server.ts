@@ -13,6 +13,11 @@ import { getArchitectureNotes } from './tools/architecture-notes.js';
 import { refreshIndex } from './tools/refresh.js';
 import { findDeadCode } from './tools/find-dead-code.js';
 import { getGlobalProject } from './tools/global-project.js';
+import { getSymbolBody } from './tools/symbol-body.js';
+import { getTypeDefinitions } from './tools/type-definitions.js';
+import { getSymbolReferences } from './tools/symbol-references.js';
+import { getChangedSymbols } from './tools/changed-symbols.js';
+import { getFoldedFile } from './tools/folded-file.js';
 
 export function createServer(): McpServer {
   const server = new McpServer({
@@ -304,6 +309,140 @@ export function createServer(): McpServer {
         const result = await getGlobalProject(params.root, cache, {
           refresh: params.refresh,
           depth: params.depth,
+        });
+        return {
+          content: [{ type: 'text', text: JSON.stringify(result) }],
+        };
+      } finally {
+        cache.close();
+      }
+    },
+  );
+
+  // ── 12. get_symbol_body ───────────────────────────────────────
+  server.registerTool(
+    'get_symbol_body',
+    {
+      description: 'Extract only the implementation body and doc of a specific function, class, method, or struct without reading the whole file. Saves 90-95% tokens vs reading full files.',
+      inputSchema: rootSchema.extend({
+        path: z.string().describe('Path to the file containing the symbol'),
+        symbol: z.string().describe('Exact name of the symbol (function, method, class) to extract'),
+        maxLines: z.number().optional().default(150).describe('Maximum lines of the body to return'),
+      }),
+    },
+    async (params) => {
+      const cache = new CacheManager(params.root ?? process.cwd());
+      try {
+        const result = await getSymbolBody(params.root, cache, {
+          path: params.path,
+          symbol: params.symbol,
+          maxLines: params.maxLines,
+        });
+        return {
+          content: [{ type: 'text', text: JSON.stringify(result) }],
+        };
+      } finally {
+        cache.close();
+      }
+    },
+  );
+
+  // ── 13. get_type_definitions ───────────────────────────────────
+  server.registerTool(
+    'get_type_definitions',
+    {
+      description: 'Extract and aggregate all type definitions, interfaces, structs, enums, and schemas across a file, directory, or project. Returns clean signatures without implementation code.',
+      inputSchema: rootSchema.extend({
+        path: z.string().optional().describe('Filter types to a specific file or directory path (optional)'),
+        limit: z.number().optional().default(50).describe('Maximum number of type definitions to return'),
+      }),
+    },
+    async (params) => {
+      const cache = new CacheManager(params.root ?? process.cwd());
+      try {
+        const result = await getTypeDefinitions(params.root, cache, {
+          path: params.path,
+          limit: params.limit,
+        });
+        return {
+          content: [{ type: 'text', text: JSON.stringify(result) }],
+        };
+      } finally {
+        cache.close();
+      }
+    },
+  );
+
+  // ── 14. get_symbol_references ──────────────────────────────────
+  server.registerTool(
+    'get_symbol_references',
+    {
+      description: 'Find all occurrences, usages, and imports of a specific symbol across the entire codebase. Returns compact preview snippets and line numbers.',
+      inputSchema: rootSchema.extend({
+        symbol: z.string().describe('Symbol name to search for references of'),
+        path: z.string().optional().describe('Definition file path (optional)'),
+        limit: z.number().optional().default(30).describe('Maximum references to return'),
+      }),
+    },
+    async (params) => {
+      const cache = new CacheManager(params.root ?? process.cwd());
+      try {
+        const result = await getSymbolReferences(params.root, cache, {
+          symbol: params.symbol,
+          path: params.path,
+          limit: params.limit,
+        });
+        return {
+          content: [{ type: 'text', text: JSON.stringify(result) }],
+        };
+      } finally {
+        cache.close();
+      }
+    },
+  );
+
+  // ── 15. get_changed_symbols ────────────────────────────────────
+  server.registerTool(
+    'get_changed_symbols',
+    {
+      description: 'Analyze git working tree or commit diffs and return added, modified, and deleted symbol names per file instead of raw diffs. Saves 80% tokens vs full git diff.',
+      inputSchema: rootSchema.extend({
+        stagedOnly: z.boolean().optional().default(false).describe('Only inspect staged git changes'),
+        base: z.string().optional().describe('Git base reference to diff against (e.g., "HEAD~1" or "main")'),
+      }),
+    },
+    async (params) => {
+      const cache = new CacheManager(params.root ?? process.cwd());
+      try {
+        const result = await getChangedSymbols(params.root, cache, {
+          stagedOnly: params.stagedOnly,
+          base: params.base,
+        });
+        return {
+          content: [{ type: 'text', text: JSON.stringify(result) }],
+        };
+      } finally {
+        cache.close();
+      }
+    },
+  );
+
+  // ── 16. get_folded_file ────────────────────────────────────────
+  server.registerTool(
+    'get_folded_file',
+    {
+      description: 'Return a file with all function and class bodies folded ({ /* ... N lines folded */ }), showing only structure, imports, types, and signatures. Option to unfold specific symbols.',
+      inputSchema: rootSchema.extend({
+        path: z.string().describe('Path to the file to fold'),
+        unfoldSymbols: z.array(z.string()).optional().describe('List of specific symbol names to keep unfolded'),
+      }),
+    },
+    async (params) => {
+      const cache = new CacheManager(params.root ?? process.cwd());
+      try {
+        const result = await getFoldedFile(params.root, cache, {
+          path: params.path,
+          unfoldSymbols: params.unfoldSymbols,
         });
         return {
           content: [{ type: 'text', text: JSON.stringify(result) }],
