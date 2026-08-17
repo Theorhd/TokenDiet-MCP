@@ -28,7 +28,7 @@ export async function searchSymbols(
   } = options;
 
   // Try cache first
-  const cachedResults = cache.searchSymbols(query, kind, limit * 2);
+  const cachedResults = cache.searchSymbols(query, kind, limit * 10, filePattern);
 
   if (cachedResults.length > 0) {
     let matches: SearchResult[] = cachedResults.map(r => ({
@@ -47,7 +47,8 @@ export async function searchSymbols(
       });
     }
     if (filePattern) {
-      const pattern = new RegExp(filePattern.replace(/\*/g, '.*'), 'i');
+      const regexPattern = '^' + filePattern.replace(/\*\*/g, '___DOUBLESTAR___').replace(/\*/g, '[^/]*').replace(/___DOUBLESTAR___/g, '.*') + '$';
+      const pattern = new RegExp(regexPattern, 'i');
       matches = matches.filter(m => pattern.test(m.file));
     }
 
@@ -73,7 +74,8 @@ export async function searchSymbols(
   for (const file of sourceFiles) {
     if (language && !isLanguageMatch(file.lang, language)) continue;
     if (filePattern) {
-      const pattern = new RegExp(filePattern.replace(/\*/g, '.*'), 'i');
+      const regexPattern = '^' + filePattern.replace(/\*\*/g, '___DOUBLESTAR___').replace(/\*/g, '[^/]*').replace(/___DOUBLESTAR___/g, '.*') + '$';
+      const pattern = new RegExp(regexPattern, 'i');
       if (!pattern.test(file.relative)) continue;
     }
 

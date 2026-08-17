@@ -17,21 +17,20 @@ export async function getProjectSummary(
     cache.clear();
   }
 
-  // Walk the project
-  const result = walk(projectRoot, { maxDepth: 1, includeTests: true });
+  // Single walk for stats and structure
+  const fullWalk = walk(projectRoot, { maxDepth: 8, includeTests: true });
+
   const topDirs: TopLevelDir[] = [];
-  for (const entry of result.entries) {
-    if (entry.isDir) {
+  for (const entry of fullWalk.entries) {
+    if (entry.isDir && !entry.relative.includes('/')) {
       topDirs.push({
         name: entry.relative + '/',
         role: guessRole(entry.relative),
-        fileCount: 0, // filled below
+        fileCount: 0,
       });
     }
   }
 
-  // Deeper walk for stats
-  const fullWalk = walk(projectRoot, { maxDepth: 8, includeTests: true });
   const langStats = new Map<string, { files: number; loc: number }>();
   for (const entry of fullWalk.entries) {
     if (entry.isDir) continue;
@@ -60,9 +59,15 @@ export async function getProjectSummary(
 
   // Determine project kind
   let kind: ProjectSummary['kind'] = 'mixed';
-  if (pkg?.workspaces) kind = 'monorepo';
-  else if (pkg?.bin || pkg?.main) kind = 'app';
-  else if (!pkg?.bin && pkg?.main) kind = 'library';
+  if (pkg?.workspaces) {
+    kind = 'monorepo';
+  } else if (pkg?.bin) {
+    kind = 'app';
+  } else if (pkg?.main) {
+    kind = 'library';
+  } else if (detected.frameworks.length > 0) {
+    kind = 'app';
+  }
 
   // Build tool
   const buildTool = detected.buildTools[0] ?? 'unknown';
