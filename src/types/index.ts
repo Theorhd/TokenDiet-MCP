@@ -227,8 +227,77 @@ export interface GlobalProjectOutput {
   elapsedMs: number;
 }
 
+// ─── Symbol Body ────────────────────────────────────────────────
+export interface SymbolBodyOutput {
+  file: string;
+  symbol: string;
+  kind: SymbolKind;
+  line: number;
+  endLine: number;
+  signature: string;
+  doc: string;
+  body: string;
+  _truncated?: string;
+}
+
+// ─── Type Definitions ───────────────────────────────────────────
+export interface TypeDefItem {
+  name: string;
+  kind: SymbolKind;
+  file: string;
+  line: number;
+  signature: string;
+  doc: string;
+}
+
+export interface TypeDefinitionsOutput {
+  types: TypeDefItem[];
+  totalTypes: number;
+  _truncated?: string;
+}
+
+// ─── Symbol References ──────────────────────────────────────────
+export interface SymbolReference {
+  file: string;
+  line: number;
+  preview: string;
+  isImport: boolean;
+}
+
+export interface SymbolReferencesOutput {
+  symbol: string;
+  references: SymbolReference[];
+  totalReferences: number;
+  _truncated?: string;
+}
+
+// ─── Changed Symbols ────────────────────────────────────────────
+export interface ChangedFileSummary {
+  file: string;
+  status: 'modified' | 'added' | 'deleted' | 'untracked';
+  addedSymbols: string[];
+  modifiedSymbols: string[];
+  removedSymbols: string[];
+}
+
+export interface ChangedSymbolsOutput {
+  branch: string;
+  changedFiles: ChangedFileSummary[];
+  totalFilesChanged: number;
+}
+
+// ─── Folded File ────────────────────────────────────────────────
+export interface FoldedFileOutput {
+  file: string;
+  language: string;
+  totalLines: number;
+  foldedLines: number;
+  content: string;
+}
+
 // ─── Tool Context ───────────────────────────────────────────────
 export interface ToolContext {
   root: string;
   cache: unknown; // CacheManager — circular ref avoided via interface
 }
+

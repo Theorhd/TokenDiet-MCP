@@ -1,4 +1,4 @@
-import { readFileSync, existsSync } from 'node:fs';
+import { readFileSync, readdirSync, statSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { resolveRoot, displayPath } from '../core/paths.js';
 import { walk } from '../core/walker.js';
@@ -42,7 +42,7 @@ export async function getEntryPoints(
     // scripts
     if (pkg.scripts && Array.isArray(pkg.scripts)) {
       for (const script of pkg.scripts) {
-        if (['dev', 'start', 'build', 'test', 'lint', 'deploy'].includes(script as string)) {
+        if (['dev', 'start', 'build', 'test', 'lint', 'deploy', 'watch', 'serve'].includes(script as string)) {
           cliCommands.push({
             name: script as string,
             command: `npm run ${script}`,
@@ -75,9 +75,15 @@ export async function getEntryPoints(
     const cmdDir = join(projectRoot, 'cmd');
     if (existsSync(cmdDir)) {
       try {
-        const cmds = readFileSync(cmdDir);
-        // cmd/ subdirs are entry points
-        entryPoints.push({ path: 'cmd/', kind: 'main', via: 'convention: go' });
+        const cmds = readdirSync(cmdDir);
+        for (const cmd of cmds) {
+          const cmdPath = join(cmdDir, cmd);
+          try {
+            if (statSync(cmdPath).isDirectory() || cmd.endsWith('.go')) {
+              entryPoints.push({ path: `cmd/${cmd}`, kind: 'main', via: 'convention: go cmd' });
+            }
+          } catch { /* skip */ }
+        }
       } catch { /* skip */ }
     }
     const mainGo = join(projectRoot, 'main.go');
@@ -100,7 +106,7 @@ export async function getEntryPoints(
   }
 
   // ── 2. Convention-based detection ──
-  const result = walk(projectRoot, { maxDepth: 3, includeTests: false });
+  const result = walk(projectRoot, { maxDepth: 6, includeTests: false });
   const entryPatterns = [
     { pattern: /^src\/index\.(ts|tsx|js|jsx|mjs)$/, kind: 'main' as const, via: 'convention: index' },
     { pattern: /^index\.(ts|tsx|js|jsx)$/, kind: 'main' as const, via: 'convention: root index' },
@@ -116,9 +122,27 @@ export async function getEntryPoints(
         entryPoints.push({ path: entry.relative, kind, via });
       }
     }
+
+    // ── 3. File-based routes detection (Next.js, SvelteKit, Nuxt, Astro) ──
+    if (routes.length < 50) {
+      const rel = entry.relative;
+      if (/^app\/(.+)\/route\.(ts|js|mjs)$/.test(rel)) {
+        const match = rel.match(/^app\/(.+)\/route\.(ts|js|mjs)$/);
+        routes.push({ method: 'ALL', path: `/${match?.[1] ?? ''}`, handler: 'route handler', file: rel });
+      } else if (/^pages\/api\/(.+)\.(ts|js|mjs)$/.test(rel)) {
+        const match = rel.match(/^pages\/api\/(.+)\.(ts|js|mjs)$/);
+        routes.push({ method: 'ALL', path: `/api/${match?.[1]?.replace(/\/index$/, '') ?? ''}`, handler: 'API handler', file: rel });
+      } else if (/^src\/routes\/(.+)\/\+server\.(ts|js)$/.test(rel)) {
+        const match = rel.match(/^src\/routes\/(.+)\/\+server\.(ts|js)$/);
+        routes.push({ method: 'ALL', path: `/${match?.[1] ?? ''}`, handler: 'server endpoint', file: rel });
+      } else if (/^server\/api\/(.+)\.(ts|js)$/.test(rel)) {
+        const match = rel.match(/^server\/api\/(.+)\.(ts|js)$/);
+        routes.push({ method: 'ALL', path: `/api/${match?.[1] ?? ''}`, handler: 'event handler', file: rel });
+      }
+    }
   }
 
-  // ── 3. Route detection (scan for route registrations) ──
+  // ── 4. Route detection (scan code for programmatic route registrations) ──
   for (const entry of result.entries) {
     if (entry.isDir) continue;
     if (!['ts', 'tsx', 'js', 'jsx', 'py', 'go'].includes(entry.lang)) continue;

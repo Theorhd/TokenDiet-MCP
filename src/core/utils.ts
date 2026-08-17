@@ -69,23 +69,46 @@ export function resolveImportPath(
   const fromDir = fromFile.substring(0, fromFile.lastIndexOf('/'));
   const resolved = join(fromDir, importSpec);
 
-  // Common extensions to probe
-  const extensions = ['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs',
-    '.py', '.go', '.rs', '.java', '.rb',
-    '/index.ts', '/index.js', '/index.tsx', '/index.py', '/index.go',
-    '/__init__.py'];
-
   const candidates: string[] = [];
   if (existsSync(resolved)) {
     candidates.push(resolved);
   }
+
+  // If import ends with .js, .jsx, .mjs, .cjs, probe corresponding .ts/.tsx/.mts/.cts files
+  const extMatch = resolved.match(/\.(js|jsx|mjs|cjs)$/);
+  if (extMatch) {
+    const base = resolved.slice(0, -extMatch[0].length);
+    const altExtensions = ['.ts', '.tsx', '.mts', '.cts', '.js', '.jsx', '.mjs', '.cjs'];
+    for (const ext of altExtensions) {
+      const candidate = base + ext;
+      if (candidate !== resolved && existsSync(candidate)) {
+        candidates.push(candidate);
+      }
+    }
+    for (const idx of ['/index.ts', '/index.tsx', '/index.mts', '/index.js']) {
+      const candidate = base + idx;
+      if (existsSync(candidate)) {
+        candidates.push(candidate);
+      }
+    }
+  }
+
+  // Common extensions to probe if extension omitted or for directory imports
+  const extensions = [
+    '.ts', '.tsx', '.mts', '.cts', '.js', '.jsx', '.mjs', '.cjs',
+    '.py', '.go', '.rs', '.java', '.rb',
+    '/index.ts', '/index.tsx', '/index.mts', '/index.js', '/index.jsx',
+    '/index.py', '/index.go', '/index.rs',
+    '/__init__.py',
+  ];
+
   for (const ext of extensions) {
     const candidate = resolved + ext;
     if (existsSync(candidate)) {
       candidates.push(candidate);
     }
   }
-  return candidates;
+  return Array.from(new Set(candidates));
 }
 
 /** Extract the module/package name from an import path */

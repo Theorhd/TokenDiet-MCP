@@ -9,6 +9,14 @@ const ALWAYS_SKIP = new Set([
   'coverage', '.nyc_output', '.cache', '.turbo', '.parcel-cache',
 ]);
 
+const ALLOWED_DOT_NAMES = new Set([
+  '.github', '.circleci', '.cargo', '.gitlab-ci.yml',
+  '.eslintrc.js', '.eslintrc.json', '.eslintrc.cjs', '.eslintrc.yaml', '.eslintrc.yml',
+  '.prettierrc', '.prettierrc.json', '.prettierrc.js', '.prettierrc.yaml', '.prettierrc.yml',
+  '.env.example', '.env.template', '.env.sample',
+  '.dockerignore', '.editorconfig', '.babelrc',
+]);
+
 const SKIP_EXTENSIONS = new Set([
   '.min.js', '.min.css', '.map', '.lock', '.wasm',
   '.png', '.jpg', '.jpeg', '.gif', '.svg', '.ico', '.webp',
@@ -119,7 +127,7 @@ export function walk(root: string, options: WalkOptions = {}): WalkResult {
   function shouldIgnore(relPath: string, isDir: boolean): boolean {
     const name = relPath.split('/').pop() ?? relPath;
     if (ALWAYS_SKIP.has(name)) return true;
-    if (name.startsWith('.')) return true; // hidden files/dirs
+    if (name.startsWith('.') && !ALLOWED_DOT_NAMES.has(name)) return true; // hidden files/dirs unless allowed
     for (const ig of igStack) {
       if (ig.ignores(relPath)) return true;
     }

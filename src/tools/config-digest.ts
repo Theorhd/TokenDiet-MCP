@@ -1,4 +1,4 @@
-import { readFileSync, existsSync } from 'node:fs';
+import { readFileSync, readdirSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { resolveRoot } from '../core/paths.js';
 import { readFileSafe } from '../core/utils.js';
@@ -30,7 +30,8 @@ export async function getConfigDigest(
     'requirements.txt', 'Pipfile', 'Gemfile', '.ruby-version',
     'pom.xml', 'build.gradle', 'build.gradle.kts',
     'Dockerfile', 'docker-compose.yml', 'docker-compose.yaml',
-    'vite.config.ts', 'vite.config.js', 'webpack.config.js',
+    'vite.config.ts', 'vite.config.js', 'vite.config.mjs',
+    'tsup.config.ts', 'webpack.config.js',
     'next.config.js', 'next.config.mjs', 'next.config.ts',
     '.eslintrc.js', '.eslintrc.json', 'eslint.config.js', 'eslint.config.mjs',
     '.prettierrc', 'prettier.config.js', 'biome.json',
@@ -42,12 +43,12 @@ export async function getConfigDigest(
     if (configName === '.github/workflows') {
       if (existsSync(fullPath)) {
         try {
-          const files = readFileSync(fullPath);
-          // Just note workflows exist
+          const files = readdirSync(fullPath);
+          const ymlFiles = files.filter(f => f.endsWith('.yml') || f.endsWith('.yaml'));
           configs.push({
             file: '.github/workflows/',
             format: 'yaml',
-            summary: { workflows: 'CI/CD workflows detected' },
+            summary: { workflows: ymlFiles.length > 0 ? ymlFiles : 'CI/CD workflows detected' },
           });
         } catch { /* skip */ }
       }
@@ -211,7 +212,7 @@ function parseConfigFile(filePath: string): ConfigDigest | null {
       };
     }
 
-    // Generic JSON/YAML configs (vite, webpack, next, eslint, prettier, biome)
+    // Generic JSON/YAML configs (biome, eslint, etc.)
     if (ext === 'json' || filename.endsWith('.json')) {
       try {
         const parsed = JSON.parse(content);
@@ -221,6 +222,41 @@ function parseConfigFile(filePath: string): ConfigDigest | null {
           summary: { keys: Object.keys(parsed).slice(0, 20), type: Array.isArray(parsed) ? 'array' : 'object' },
         };
       } catch { /* skip */ }
+    }
+
+    // JavaScript / TypeScript configs (vite, next, tsup, webpack, eslint, prettier)
+    if (['ts', 'js', 'mjs', 'cjs'].includes(ext)) {
+      const exportsFound: string[] = [];
+      const defaultExport = content.match(/export\s+default\s+(?:defineConfig\s*\(\s*)?([^{\n]+)/);
+      if (defaultExport) {
+        exportsFound.push('default');
+      }
+
+      const namedExports = content.match(/export\s+(?:const|function|let|var)\s+(\w+)/g);
+      if (namedExports) {
+        for (const ne of namedExports) {
+          const name = ne.split(/\s+/).pop();
+          if (name) exportsFound.push(name);
+        }
+      }
+
+      const plugins: string[] = [];
+      const pluginMatches = content.match(/\b([A-Za-z0-9_]+Plugin|[A-Za-z0-9_]+Preset)\b/g);
+      if (pluginMatches) {
+        for (const pm of Array.from(new Set(pluginMatches)).slice(0, 5)) {
+          plugins.push(pm);
+        }
+      }
+
+      return {
+        file: filename,
+        format: 'typescript',
+        summary: {
+          fileType: ext,
+          exports: exportsFound.length > 0 ? exportsFound : ['module'],
+          plugins: plugins.length > 0 ? plugins : undefined,
+        },
+      };
     }
   } catch {
     return null;

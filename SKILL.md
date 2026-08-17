@@ -5,9 +5,9 @@ description: Explore a codebase architecture without reading every file. Use whe
 
 # TokenDiet — Codebase Exploration Without Reading Every File
 
-You have access to the **TokenDiet MCP server** (`tokendiet`), which provides 11 tools that give you a structured, token-efficient understanding of any codebase.
+You have access to the **TokenDiet MCP server** (`tokendiet`), which provides 16 tools that give you a structured, token-efficient understanding and manipulation of any codebase.
 
-**Core principle:** Never read source files directly when TokenDiet can give you the architecture-level answer. Read files ONLY when you need implementation details.
+**Core principle:** Never read whole source files directly when TokenDiet can give you the architecture-level answer or extract the exact function body you need. Read full files ONLY when making multi-line edits.
 
 ---
 
@@ -17,15 +17,20 @@ Use TokenDiet when you need to answer questions like:
 - "What is this project and how is it organized?" → `get_global_project` (single call — bundles the 4 exploration tools)
 - "What does this project do?" → `get_project_summary` (or use `get_global_project`)
 - "Where is the code for feature X?" → `search_symbols` → `get_file_overview`
+- "What does this specific function/class do?" → `get_symbol_body` (NOT reading the whole file!)
+- "What data types, interfaces or schemas exist?" → `get_type_definitions`
+- "Who calls or imports this function/class?" → `get_symbol_references`
 - "How are things organized?" → `get_directory_tree`
 - "What depends on what?" → `get_module_graph`
+- "What changed in git recently?" → `get_changed_symbols`
+- "Can I see the full file outline with code folded?" → `get_folded_file`
 - "How do I run this?" → `get_entry_points`
 - "What does this config do?" → `get_config_digest`
 - "What's the architecture philosophy?" → `get_architecture_notes`
-- "What's in this file?" → `get_file_overview` (NOT reading the file)
+- "What's in this file?" → `get_file_overview` (signatures only)
 - "Is this code actually used?" → `find_dead_code`
 
-**Do NOT** use `Read` or `cat` a source file to understand its role in the architecture. Use `get_file_overview` instead.
+**Do NOT** use `Read` or `cat` a source file to understand its role in the architecture or read a function. Use TokenDiet tools instead.
 
 ---
 
@@ -48,26 +53,25 @@ Use TokenDiet when you need to answer questions like:
 4. get_entry_points        ← How to start/run/deploy.
 ```
 
-### Deep-Dive Workflow
+### Deep-Dive & Implementation Workflow
 
 ```
 5. search_symbols          ← Find where something is defined.
 6. get_file_overview       ← See what a file exports (signatures only).
-7. get_module_graph        ← Trace dependencies between modules.
-8. get_architecture_notes  ← Read design docs if they exist.
+7. get_type_definitions    ← Aggregate all interfaces, types, structs, and schemas.
+8. get_symbol_body         ← Extract ONLY the targeted function/class body & doc.
+9. get_symbol_references   ← Trace all usages and imports of a symbol.
+10. get_module_graph       ← Trace dependencies between modules.
+11. get_folded_file        ← Inspect full file outline with folded implementations.
+12. get_architecture_notes ← Read design docs if they exist.
 ```
 
-### Maintenance Workflow
+### Git & Maintenance Workflow
 
 ```
-9. refresh_index           ← After large refactors or if cache feels stale.
-```
-
-### Dead Code Detection
-
-```
-10. find_dead_code         ← Find exported symbols and files that nothing imports.
-                              Run refresh_index first for up-to-date results.
+13. get_changed_symbols    ← Review added, modified, deleted symbols in git diff.
+14. find_dead_code         ← Find exported symbols and files that nothing imports.
+15. refresh_index          ← After large refactors or if cache feels stale.
 ```
 
 ---
@@ -423,11 +427,152 @@ find_dead_code({ "ignorePatterns": ["src/generated/**", "*.gen.ts"] })
 
 ---
 
+### 11. `get_symbol_body` — Surgical Function / Class Extraction
+
+```json
+// Extract a function's implementation without reading the whole file
+get_symbol_body({ "path": "src/core/cache.ts", "symbol": "upsertFile" })
+
+// Specific project and limit lines
+get_symbol_body({
+  "path": "src/server.ts",
+  "symbol": "createServer",
+  "maxLines": 100,
+  "root": "/path/to/project"
+})
+```
+
+**Parameters:**
+
+| Param | Default | Description |
+|-------|---------|-------------|
+| `path` | *required* | Path to the file containing the symbol |
+| `symbol` | *required* | Exact name of the symbol (function, method, class, struct) to extract |
+| `maxLines` | `150` | Maximum number of implementation lines to return |
+| `root` | cwd | Project root directory |
+
+**What you get:** Exact line range (`line`, `endLine`), symbol kind, signature, leading doc comment, and the exact implementation body without the surrounding file.
+
+**Token savings:** ~200 tokens vs reading a 500-line file (~3,000-8,000 tokens). **95% token savings.**
+
+---
+
+### 12. `get_type_definitions` — Fast Types & Schemas Digest
+
+```json
+// Get all types/interfaces across the whole project
+get_type_definitions({})
+
+// Filter to a specific types file or module directory
+get_type_definitions({ "path": "src/types/index.ts" })
+
+// In a specific project with custom limit
+get_type_definitions({ "path": "src/models/", "limit": 40 })
+```
+
+**Parameters:**
+
+| Param | Default | Description |
+|-------|---------|-------------|
+| `path` | — | Target file or directory prefix to filter types |
+| `limit` | `50` | Maximum number of type definitions to return |
+| `root` | cwd | Project root directory |
+
+**What you get:** List of `interfaces`, `types`, `enums`, `structs`, and `traits` with signatures, line numbers, and doc comments without implementation code.
+
+**Token savings:** ~500 tokens vs reading all type definition files (~6,000 tokens). **92% token savings.**
+
+---
+
+### 13. `get_symbol_references` — Symbol Usages & Callers
+
+```json
+// Find where CacheManager is used across the codebase
+get_symbol_references({ "symbol": "CacheManager" })
+
+// In a specific project with limit
+get_symbol_references({ "symbol": "parseFile", "limit": 20 })
+```
+
+**Parameters:**
+
+| Param | Default | Description |
+|-------|---------|-------------|
+| `symbol` | *required* | Symbol name to find references for |
+| `path` | — | Target file where the symbol is defined (optional) |
+| `limit` | `30` | Maximum references to return |
+| `root` | cwd | Project root directory |
+
+**What you get:** All occurrences with file, line number, `isImport` boolean, and a compact 1-line preview.
+
+**Token savings:** ~400 tokens vs grep + reading every referencing file (~8,000 tokens). **95% token savings.**
+
+---
+
+### 14. `get_changed_symbols` — Semantic Git Diff
+
+```json
+// Check uncommitted changes in current working tree
+get_changed_symbols({})
+
+// Only staged changes
+get_changed_symbols({ "stagedOnly": true })
+
+// Compare against main branch or previous commit
+get_changed_symbols({ "base": "main" })
+get_changed_symbols({ "base": "HEAD~1" })
+```
+
+**Parameters:**
+
+| Param | Default | Description |
+|-------|---------|-------------|
+| `stagedOnly` | `false` | Only inspect staged git changes |
+| `base` | — | Git base reference to diff against (e.g. `"main"`, `"HEAD~1"`) |
+| `root` | cwd | Project root directory |
+
+**What you get:** Current branch, list of changed files with status (`modified`, `added`, `deleted`), and the exact list of `addedSymbols`, `modifiedSymbols`, and `removedSymbols` per file.
+
+**Token savings:** ~400 tokens vs raw git diff (~4,000 tokens). **90% token savings.**
+
+---
+
+### 15. `get_folded_file` — Code Outline with Collapsed Bodies
+
+```json
+// View file skeleton with folded function bodies
+get_folded_file({ "path": "src/server.ts" })
+
+// Keep specific functions unfolded while folding the rest
+get_folded_file({
+  "path": "src/server.ts",
+  "unfoldSymbols": ["startServer"]
+})
+```
+
+**Parameters:**
+
+| Param | Default | Description |
+|-------|---------|-------------|
+| `path` | *required* | Path to the file to fold |
+| `unfoldSymbols` | `[]` | List of symbol names to keep expanded |
+| `root` | cwd | Project root directory |
+
+**What you get:** Complete file structure (imports, type definitions, exports, signatures) with inner implementations replaced by `{ /* ... N lines folded */ }`.
+
+**Token savings:** ~500 tokens vs reading a 500-line file (~3,000 tokens). **83% token savings.**
+
+---
+
 ## Anti-Patterns (DO NOT DO THESE)
 
 | ❌ Anti-Pattern | ✅ Correct |
 |-----------------|-----------|
 | Calling 4 exploration tools one by one on a new project | `get_global_project({})` — one call, all the context |
+| Reading a 500-line file to see 1 function implementation | `get_symbol_body({ path: "...", symbol: "..." })` |
+| Reading multiple files to collect types and interfaces | `get_type_definitions({ path: "..." })` |
+| Running `grep` + reading 5 files to find where a function is called | `get_symbol_references({ symbol: "..." })` |
+| Running `git diff` with hundreds of raw lines | `get_changed_symbols({})` |
 | `Read src/components/Button.tsx` to understand what it does | `get_file_overview({ path: "src/components/Button.tsx" })` |
 | `grep -r "function parse" src/` | `search_symbols({ query: "parse", kind: "function" })` |
 | `cat package.json` then `cat tsconfig.json` then `cat vite.config.ts` | `get_config_digest({})` |
@@ -449,16 +594,28 @@ Starting to explore a project?
   → get_directory_tree({})
   → get_config_digest({})
 
-Need to understand a specific file?
-  → get_file_overview({ path: "..." })
-  → If precision is "approx" and you need exact signatures, Read the file
+Need to understand a specific file structure?
+  → get_file_overview({ path: "..." })  ← signatures, imports, purpose
+  → get_folded_file({ path: "..." })    ← full code skeleton with collapsed bodies
+
+Need to inspect a specific function / class body?
+  → get_symbol_body({ path: "...", symbol: "..." })  ← ONLY reads target lines!
+
+Need to find interfaces, types or schemas?
+  → get_type_definitions({ path: "..." })
 
 Looking for where something is defined?
   → search_symbols({ query: "..." })    ← substring match, NOT glob
   → get_file_overview({ path: result.file })
 
+Tracing where a symbol is called / imported?
+  → get_symbol_references({ symbol: "..." })
+
 Tracing how modules connect?
   → get_module_graph({})                ← aggregated mode (default)
+
+Inspecting recent code changes?
+  → get_changed_symbols({})             ← semantic diff without raw noise
 
 Want to know how to run the project?
   → get_entry_points({})

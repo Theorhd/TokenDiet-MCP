@@ -1,3 +1,4 @@
+import { statSync } from 'node:fs';
 import { resolveRoot } from '../core/paths.js';
 import { walk } from '../core/walker.js';
 import { parseFile } from '../parsers/index.js';
@@ -11,40 +12,46 @@ export async function refreshIndex(
   const projectRoot = resolveRoot(root);
   const startTime = Date.now();
 
-  // Clear existing
-  const oldStats = cache.getStats();
-
   // Walk and re-index
   const result = walk(projectRoot, { maxDepth: 8, includeTests: true });
   const validPaths = new Set<string>();
   let reindexed = 0;
 
-  for (const entry of result.entries) {
-    if (entry.isDir) continue;
-    validPaths.add(entry.relative);
+  cache.withTransaction(() => {
+    for (const entry of result.entries) {
+      if (entry.isDir) continue;
+      validPaths.add(entry.relative);
 
-    const content = readFileSafe(entry.path);
-    if (!content) continue;
+      const content = readFileSafe(entry.path);
+      if (!content) continue;
 
-    try {
-      const parsed = parseFile(entry.path, content);
-      cache.upsertFile(
-        entry.relative,
-        Date.now(), // mtime — we just read it
-        entry.size,
-        entry.lang,
-        'regex',
-        parsed.lines,
-        parsed.bytes,
-        parsed.precision,
-        parsed.symbols,
-        parsed.imports,
-      );
-      reindexed++;
-    } catch {
-      // Skip files that can't be parsed
+      try {
+        let mtimeMs = Date.now();
+        try {
+          const st = statSync(entry.path);
+          mtimeMs = st.mtimeMs;
+        } catch { /* fallback to Date.now() */ }
+
+        const parsed = parseFile(entry.path, content);
+        cache.upsertFile(
+          entry.relative,
+          Math.floor(mtimeMs),
+          entry.size,
+          entry.lang,
+          'regex',
+          parsed.lines,
+          parsed.bytes,
+          parsed.precision,
+          parsed.symbols,
+          parsed.imports,
+          parsed.purpose,
+        );
+        reindexed++;
+      } catch {
+        // Skip files that can't be parsed
+      }
     }
-  }
+  });
 
   // Remove stale entries
   const removed = cache.removeStaleFiles(validPaths);

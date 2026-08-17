@@ -33,16 +33,29 @@ export async function getFileOverview(
   if (cachedMtime === Math.floor(stats.mtimeMs)) {
     const cached = cache.getFileOverview(displayPath(projectRoot, filePath));
     if (cached) {
+      let symbols: SymbolInfo[] = cached.symbols;
+      if (detail === 'names') {
+        symbols = symbols.map(s => ({ ...s, signature: '', doc: '' }));
+      } else if (detail === 'bodies') {
+        const content = readFileSafe(filePath);
+        if (content) {
+          symbols = symbols.map(s => {
+            const bodyLines = content.split('\n').slice(s.line, s.line + 10).join('\n').slice(0, 200);
+            return { ...s, doc: s.doc || bodyLines.slice(0, 100) };
+          });
+        }
+      }
+
       return {
         file: displayPath(projectRoot, filePath),
         language: cached.lang,
-        purpose: '',
+        purpose: cached.purpose,
         lines: cached.lines,
         bytes: cached.bytes,
         lastModified: new Date(stats.mtimeMs).toISOString(),
-        imports: [],
+        imports: cached.imports,
         exports: cached.symbols.filter(s => s.exported).map(s => ({ ...s, kind: s.kind as ExportInfo['kind'] })),
-        symbols: cached.symbols.slice(0, maxSymbols),
+        symbols: symbols.slice(0, maxSymbols),
         precision: cached.precision as 'full' | 'approx',
       };
     }
@@ -81,6 +94,7 @@ export async function getFileOverview(
     parsed.precision,
     parsed.symbols,
     parsed.imports,
+    parsed.purpose,
   );
 
   return {
