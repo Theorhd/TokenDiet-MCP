@@ -1,6 +1,6 @@
 import { execSync } from 'node:child_process';
 import { resolve } from 'node:path';
-import { resolveRoot } from '../core/paths.js';
+import { resolveRoot, toPosix } from '../core/paths.js';
 import { readFileSafe } from '../core/utils.js';
 import { parseFile } from '../parsers/index.js';
 import type { ChangedSymbolsOutput, ChangedFileSummary } from '../types/index.js';
@@ -108,10 +108,15 @@ export async function getChangedSymbols(
         for (const s of currentParsed.symbols) {
           addedSymbols.push(s.name);
         }
+      } else if (!currentContent && oldContent) {
+        const oldParsed = parseFile(fullCurrentPath, oldContent);
+        for (const s of oldParsed.symbols) {
+          removedSymbols.push(s.name);
+        }
       }
 
       changedFiles.push({
-        file: filePath,
+        file: toPosix(filePath),
         status,
         addedSymbols,
         modifiedSymbols,
@@ -119,7 +124,7 @@ export async function getChangedSymbols(
       });
     }
   } catch {
-    // Fail gracefully if git operations fail
+    // Fail gracefully
   }
 
   return {

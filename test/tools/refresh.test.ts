@@ -9,6 +9,7 @@ describe('refreshIndex', () => {
 
   beforeEach(() => {
     cache = new CacheManager(projectRoot);
+    cache.clear();
   });
 
   afterEach(() => {
@@ -23,5 +24,9 @@ describe('refreshIndex', () => {
 
     const stats = cache.getStats();
     expect(stats.fileCount).toBeGreaterThan(0);
+
+    // Incremental indexing: second run should skip unmodified files
+    const secondResult = await refreshIndex(projectRoot, cache);
+    expect(secondResult.reindexed).toBe(0);
   });
 });

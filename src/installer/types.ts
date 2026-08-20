@@ -11,6 +11,7 @@ export interface InstallOptions {
   cwd?: string;
   backup?: boolean;
   silent?: boolean;
+  skillContent?: string;
 }
 
 export interface TargetStatus {
