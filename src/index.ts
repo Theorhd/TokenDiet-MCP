@@ -1,9 +1,19 @@
 #!/usr/bin/env node
 
+import { isMainThread } from 'node:worker_threads';
 import { startServer } from './server.js';
 import { runInstallerCli } from './installer/index.js';
 
 async function main(): Promise<void> {
+  // Validate Node.js version
+  const [major, minor] = process.versions.node.split('.').map(Number);
+  if ((major ?? 0) < 22 || ((major ?? 0) === 22 && (minor ?? 0) < 13)) {
+    console.error(
+      `TokenDiet MCP requires Node.js >= 22.13.0 for built-in node:sqlite support (current: v${process.versions.node}). Please upgrade Node.js.`
+    );
+    process.exit(1);
+  }
+
   const args = process.argv.slice(2);
   const firstArg = args[0]?.toLowerCase();
 
@@ -27,7 +37,7 @@ async function main(): Promise<void> {
 
   for (const arg of args) {
     if (arg === '--version' || arg === '-v') {
-      process.stdout.write('tokendiet v0.3.0\n');
+      process.stdout.write('tokendiet v0.4.0\n');
       process.exit(0);
     }
     if (arg === '--help' || arg === '-h') {
@@ -65,4 +75,6 @@ Environment Variables:
   }
 }
 
-main();
+if (isMainThread) {
+  main();
+}

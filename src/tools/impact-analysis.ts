@@ -1,5 +1,4 @@
-import { resolve } from 'node:path';
-import { resolveRoot, displayPath, toPosix } from '../core/paths.js';
+import { resolveRoot, displayPath, toPosix, resolveSecurePath } from '../core/paths.js';
 import { walk } from '../core/walker.js';
 import { parseFile } from '../parsers/index.js';
 import { readFileSafe, resolveImportPath } from '../core/utils.js';
@@ -26,7 +25,8 @@ export async function getImpactAnalysis(
 ): Promise<ImpactAnalysisOutput> {
   const projectRoot = resolveRoot(root);
   const { path: targetInput, maxDepth = 5 } = options;
-  const targetPath = toPosix(displayPath(projectRoot, resolve(projectRoot, targetInput)));
+  const secureResolved = resolveSecurePath(projectRoot, targetInput);
+  const targetPath = toPosix(displayPath(projectRoot, secureResolved));
 
   const indexedAt = cache.getIndexedAt();
   const inDegreeMap = new Map<string, Set<string>>(); // target -> Set of files that import target

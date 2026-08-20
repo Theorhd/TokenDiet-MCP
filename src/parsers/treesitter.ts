@@ -124,6 +124,16 @@ export class TreeSitterManager {
       });
 
       this.initialized = true;
+
+      // Preload available language WASMs
+      const preloadLangs: SupportedTreeSitterLang[] = ['typescript', 'tsx', 'javascript', 'python', 'go', 'rust'];
+      for (const lang of preloadLangs) {
+        try {
+          await this.getParser(lang);
+        } catch {
+          // Graceful fallback if WASM file is absent
+        }
+      }
     })();
 
     await this.initializingPromise;
@@ -213,7 +223,15 @@ export class TreeSitterManager {
       return null;
     }
 
-    const parser = this.parsers.get(lang);
+    let parser = this.parsers.get(lang);
+    if (!parser && this.languages.has(lang)) {
+      const language = this.languages.get(lang)!;
+      parser = new Parser();
+      parser.setLanguage(language);
+      this.parsers.set(lang, parser);
+      this.markUsed(lang);
+    }
+
     if (!parser) {
       return null;
     }
@@ -553,7 +571,7 @@ export class TreeSitterManager {
             const doc = this.extractPythonDocstring(node) || this.extractLeadingDoc(node, lines);
             const sym: SymbolInfo = {
               name,
-              kind: name.startsWith('_') ? 'function' : 'function',
+              kind: 'function',
               line: startLine,
               endLine,
               signature: sigLine.slice(0, 90).replace(/:$/, '').trim(),
@@ -761,7 +779,11 @@ export class TreeSitterManager {
 
       // Recurse children
       for (const child of node.children) {
-        visit(child, parentExported);
+        if (type === 'export_statement') {
+          visit(child, true);
+        } else {
+          visit(child, false);
+        }
       }
     };
 

@@ -1,5 +1,4 @@
-import { resolve } from 'node:path';
-import { resolveRoot, displayPath } from '../core/paths.js';
+import { resolveRoot, displayPath, resolveSecurePath } from '../core/paths.js';
 import { readFileSafe } from '../core/utils.js';
 import { parseFile } from '../parsers/index.js';
 import { detectLanguage } from '../core/walker.js';
@@ -17,7 +16,7 @@ export async function getFoldedFile(
   options: FoldedFileOptions,
 ): Promise<FoldedFileOutput> {
   const projectRoot = resolveRoot(root);
-  const filePath = resolve(projectRoot, options.path);
+  const filePath = resolveSecurePath(projectRoot, options.path);
   const { unfoldSymbols = [] } = options;
 
   const content = readFileSafe(filePath);

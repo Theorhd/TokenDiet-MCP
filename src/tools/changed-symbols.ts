@@ -1,14 +1,18 @@
-import { execSync } from 'node:child_process';
-import { resolve } from 'node:path';
-import { resolveRoot, toPosix } from '../core/paths.js';
-import { readFileSafe } from '../core/utils.js';
+import { execFileSync } from 'node:child_process';
+import { resolveRoot, toPosix, resolveSecurePath } from '../core/paths.js';
 import { parseFile } from '../parsers/index.js';
-import type { ChangedSymbolsOutput, ChangedFileSummary } from '../types/index.js';
+import { readFileSafe } from '../core/utils.js';
 import type { CacheManager } from '../core/cache.js';
+import type { ChangedSymbolsOptions, ChangedSymbolsOutput, ChangedFileSummary } from '../types/index.js';
 
-export interface ChangedSymbolsOptions {
-  stagedOnly?: boolean;
-  base?: string;
+// Strict regex allowing only safe git ref characters, blocking options starting with '-'
+const GIT_REF_REGEX = /^[a-zA-Z0-9_./^~@-]+$/;
+
+function unquoteGitPath(pathStr: string): string {
+  if (pathStr.startsWith('"') && pathStr.endsWith('"')) {
+    return pathStr.slice(1, -1).replace(/\\"/g, '"').replace(/\\\\/g, '\\');
+  }
+  return pathStr;
 }
 
 export async function getChangedSymbols(
@@ -19,9 +23,17 @@ export async function getChangedSymbols(
   const projectRoot = resolveRoot(root);
   const { stagedOnly = false, base } = options;
 
+  if (base && (!GIT_REF_REGEX.test(base) || base.startsWith('-'))) {
+    throw new Error(`Invalid git base reference: "${base}"`);
+  }
+
   let branch = 'unknown';
   try {
-    branch = execSync('git rev-parse --abbrev-ref HEAD', { cwd: projectRoot, encoding: 'utf-8' }).trim();
+    branch = execFileSync('git', ['-c', 'core.quotePath=false', 'rev-parse', '--abbrev-ref', 'HEAD'], {
+      cwd: projectRoot,
+      encoding: 'utf-8',
+      stdio: ['pipe', 'pipe', 'ignore'],
+    }).trim();
   } catch {
     return { branch: 'not-a-git-repo', changedFiles: [], totalFilesChanged: 0 };
   }
@@ -29,57 +41,88 @@ export async function getChangedSymbols(
   const changedFiles: ChangedFileSummary[] = [];
 
   try {
-    let diffCmd = 'git status --porcelain';
+    let gitArgs: string[];
     if (base) {
-      diffCmd = `git diff --name-status ${base}`;
+      gitArgs = ['diff', '--name-status', base];
     } else if (stagedOnly) {
-      diffCmd = 'git diff --cached --name-status';
+      gitArgs = ['diff', '--cached', '--name-status'];
+    } else {
+      gitArgs = ['status', '--porcelain'];
     }
 
-    const statusOutput = execSync(diffCmd, { cwd: projectRoot, encoding: 'utf-8' }).trim();
+    const statusOutput = execFileSync('git', ['-c', 'core.quotePath=false', ...gitArgs], {
+      cwd: projectRoot,
+      encoding: 'utf-8',
+      stdio: ['pipe', 'pipe', 'ignore'],
+    }).trim();
+
     if (!statusOutput) {
       return { branch, changedFiles: [], totalFilesChanged: 0 };
     }
 
     const lines = statusOutput.split('\n');
+
     for (const line of lines) {
       const trimmed = line.trim();
       if (!trimmed) continue;
 
-      let statusCode: string;
-      let filePath: string;
+      let status: ChangedFileSummary['status'] = 'modified';
+      let rawFilePath = '';
 
       if (base || stagedOnly) {
         const parts = trimmed.split(/\s+/);
-        statusCode = parts[0] ?? 'M';
-        filePath = parts.slice(1).join(' ');
+        const statusCode = parts[0] ?? 'M';
+        rawFilePath = parts.slice(1).join(' ');
+
+        if (statusCode.startsWith('A')) status = 'added';
+        else if (statusCode.startsWith('D')) status = 'deleted';
+        else if (statusCode.startsWith('R')) {
+          status = 'modified';
+          // Git rename format: R100 oldPath newPath
+          const renameParts = rawFilePath.split(/\s+/);
+          rawFilePath = renameParts[renameParts.length - 1] ?? rawFilePath;
+        } else status = 'modified';
       } else {
-        statusCode = trimmed.slice(0, 2).trim();
-        filePath = trimmed.slice(3).trim();
+        const statusCode = trimmed.slice(0, 2).trim();
+        rawFilePath = trimmed.slice(3).trim();
+
+        if (statusCode === '??') status = 'untracked';
+        else if (statusCode === 'A' || statusCode === 'AM') status = 'added';
+        else if (statusCode === 'D') status = 'deleted';
+        else status = 'modified';
       }
 
-      let status: ChangedFileSummary['status'] = 'modified';
-      if (statusCode.includes('A') || statusCode === '??') status = 'added';
-      else if (statusCode.includes('D')) status = 'deleted';
-      else if (statusCode === '??') status = 'untracked';
+      const filePath = unquoteGitPath(rawFilePath);
 
-      const addedSymbols: string[] = [];
-      const modifiedSymbols: string[] = [];
-      const removedSymbols: string[] = [];
+      // Skip non-code files
+      if (!filePath.match(/\.(ts|tsx|js|jsx|py|go|rs|java|rb|php|c|cpp|h|hpp|cs|swift|kt)$/i)) {
+        continue;
+      }
 
-      const fullCurrentPath = resolve(projectRoot, filePath);
+      let addedSymbols: string[] = [];
+      let modifiedSymbols: string[] = [];
+      let removedSymbols: string[] = [];
+
+      let fullCurrentPath = '';
+      try {
+        fullCurrentPath = resolveSecurePath(projectRoot, filePath);
+      } catch {
+        continue;
+      }
       const currentContent = readFileSafe(fullCurrentPath);
 
       let oldContent: string | null = null;
-      try {
-        const gitBase = base || (stagedOnly ? 'HEAD' : 'HEAD');
-        oldContent = execSync(`git show ${gitBase}:${filePath}`, {
-          cwd: projectRoot,
-          encoding: 'utf-8',
-          stdio: ['pipe', 'pipe', 'ignore'],
-        });
-      } catch {
-        oldContent = null;
+      if (status !== 'untracked') {
+        try {
+          const gitBase = base || 'HEAD';
+          oldContent = execFileSync('git', ['-c', 'core.quotePath=false', 'show', `${gitBase}:${filePath}`], {
+            cwd: projectRoot,
+            encoding: 'utf-8',
+            stdio: ['pipe', 'pipe', 'ignore'],
+          });
+        } catch {
+          oldContent = null;
+        }
       }
 
       if (currentContent && oldContent) {
@@ -90,29 +133,22 @@ export async function getChangedSymbols(
         const newSymMap = new Map(currentParsed.symbols.map(s => [s.name, s]));
 
         for (const [name, sym] of newSymMap) {
-          const oldSym = oldSymMap.get(name);
-          if (!oldSym) {
+          const old = oldSymMap.get(name);
+          if (!old) {
             addedSymbols.push(name);
-          } else if (oldSym.signature !== sym.signature) {
+          } else if (old.signature !== sym.signature || old.line !== sym.line) {
             modifiedSymbols.push(name);
           }
         }
 
-        for (const [name] of oldSymMap) {
+        for (const [name, sym] of oldSymMap) {
           if (!newSymMap.has(name)) {
             removedSymbols.push(name);
           }
         }
-      } else if (currentContent && !oldContent) {
-        const currentParsed = parseFile(fullCurrentPath, currentContent);
-        for (const s of currentParsed.symbols) {
-          addedSymbols.push(s.name);
-        }
-      } else if (!currentContent && oldContent) {
-        const oldParsed = parseFile(fullCurrentPath, oldContent);
-        for (const s of oldParsed.symbols) {
-          removedSymbols.push(s.name);
-        }
+      } else if (currentContent && (status === 'added' || status === 'untracked')) {
+        const parsed = parseFile(fullCurrentPath, currentContent);
+        addedSymbols = parsed.symbols.map(s => s.name);
       }
 
       changedFiles.push({

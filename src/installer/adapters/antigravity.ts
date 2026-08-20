@@ -21,6 +21,9 @@ const TOKENDIET_TOOLS = [
   'get_symbol_references',
   'get_changed_symbols',
   'get_folded_file',
+  'get_impact_analysis',
+  'get_diff_summary',
+  'get_workspaces',
   'search_symbols',
   'refresh_index',
 ];

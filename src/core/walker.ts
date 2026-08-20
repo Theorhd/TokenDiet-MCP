@@ -1,5 +1,5 @@
 import { openSync, readSync, closeSync, statSync, readdirSync, realpathSync } from 'node:fs';
-import { join, relative } from 'node:path';
+import { join, relative, basename } from 'node:path';
 import ignore from 'ignore';
 import { toPosix } from './paths.js';
 
@@ -58,7 +58,7 @@ export function detectLanguage(filePath: string): string {
 
 /** Check if a file should be skipped based on extension */
 export function shouldSkipFile(filePath: string): boolean {
-  const name = filePath.split('/').pop() ?? filePath;
+  const name = basename(filePath);
   for (const skip of SKIP_EXTENSIONS) {
     if (name.endsWith(skip)) return true;
   }
@@ -267,10 +267,12 @@ export function countLines(filePath: string): number {
 
     while ((bytesRead = readSync(fd, buffer, 0, buffer.length, null)) > 0) {
       hasBytes = true;
-      for (let i = 0; i < bytesRead; i++) {
-        if (buffer[i] === 10) { // '\n'
-          lines++;
-        }
+      let pos = 0;
+      while (pos < bytesRead) {
+        const next = buffer.indexOf(10, pos);
+        if (next === -1 || next >= bytesRead) break;
+        lines++;
+        pos = next + 1;
       }
     }
     closeSync(fd);

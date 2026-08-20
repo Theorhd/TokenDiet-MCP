@@ -27,12 +27,21 @@ import { getDiffSummary } from './tools/diff-summary.js';
 import { getWorkspaces } from './tools/workspaces.js';
 
 // ─── Cache Pool for Server Lifecycle ──────────────────────────────
+const MAX_CACHE_POOL_SIZE = 8;
 const cachePool = new Map<string, CacheManager>();
 
 export function getPooledCache(root?: string): CacheManager {
   const projectRoot = resolveRoot(root);
   let cache = cachePool.get(projectRoot);
   if (!cache) {
+    if (cachePool.size >= MAX_CACHE_POOL_SIZE) {
+      const oldestKey = cachePool.keys().next().value;
+      if (oldestKey) {
+        const oldCache = cachePool.get(oldestKey);
+        try { oldCache?.close(); } catch {}
+        cachePool.delete(oldestKey);
+      }
+    }
     cache = new CacheManager(projectRoot);
     cachePool.set(projectRoot, cache);
   }
@@ -54,7 +63,7 @@ export function closeAllCaches(): void {
 export function createServer(): McpServer {
   const server = new McpServer({
     name: 'tokendiet',
-    version: '0.2.4',
+    version: '0.4.0',
   });
 
   // Shared root parameter schema

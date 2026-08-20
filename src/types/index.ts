@@ -275,6 +275,11 @@ export interface SymbolReferencesOutput {
 }
 
 // ─── Changed Symbols ────────────────────────────────────────────
+export interface ChangedSymbolsOptions {
+  stagedOnly?: boolean;
+  base?: string;
+}
+
 export interface ChangedFileSummary {
   file: string;
   status: 'modified' | 'added' | 'deleted' | 'untracked';

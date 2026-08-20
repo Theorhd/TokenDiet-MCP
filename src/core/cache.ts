@@ -75,6 +75,7 @@ interface PrecompiledStatements {
   getStats: StatementSync;
   getLanguages: StatementSync;
   getImportGraph: StatementSync;
+  deleteFile: StatementSync;
 }
 
 export class CacheManager {
@@ -241,6 +242,7 @@ export class CacheManager {
         FROM imports
         WHERE (? = '' OR file_path LIKE (? || '%') ESCAPE '\\')
       `),
+      deleteFile: this.db.prepare('DELETE FROM files WHERE path = ?'),
     };
   }
 
@@ -319,11 +321,9 @@ export class CacheManager {
     const allFiles = this.stmts.getAllFiles.all() as Array<{ path: string }>;
     let removed = 0;
 
-    const deleteFileStmt = this.db.prepare('DELETE FROM files WHERE path = ?');
-
     for (const f of allFiles) {
       if (!validPaths.has(f.path)) {
-        deleteFileStmt.run(f.path);
+        this.stmts.deleteFile.run(f.path);
         this.stmts.deleteSymbolsByFile.run(f.path);
         this.stmts.deleteImportsByFile.run(f.path);
         removed++;

@@ -1,5 +1,4 @@
-import { resolve } from 'node:path';
-import { resolveRoot, displayPath } from '../core/paths.js';
+import { resolveRoot, displayPath, resolveSecurePath } from '../core/paths.js';
 import { readFileSafe } from '../core/utils.js';
 import { parseFile } from '../parsers/index.js';
 import type { SymbolBodyOutput, SymbolKind } from '../types/index.js';
@@ -17,7 +16,7 @@ export async function getSymbolBody(
   options: SymbolBodyOptions,
 ): Promise<SymbolBodyOutput> {
   const projectRoot = resolveRoot(root);
-  const filePath = resolve(projectRoot, options.path);
+  const filePath = resolveSecurePath(projectRoot, options.path);
   const { symbol: targetName, maxLines = 150 } = options;
 
   const content = readFileSafe(filePath);

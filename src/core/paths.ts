@@ -1,4 +1,4 @@
-import { resolve, relative, normalize, basename, join, sep } from 'node:path';
+import { resolve, relative, normalize, basename, join, sep, isAbsolute } from 'node:path';
 import { homedir } from 'node:os';
 import { existsSync, realpathSync, statSync } from 'node:fs';
 import { createHash } from 'node:crypto';
@@ -35,6 +35,52 @@ export function resolveRoot(root?: string): string {
   } catch {
     return resolved;
   }
+}
+
+/** Check if a target path is safely contained inside the root directory */
+export function isPathInside(root: string, targetPath: string): boolean {
+  try {
+    const resolvedRoot = resolveRoot(root);
+    const resolvedTarget = resolve(resolvedRoot, expandHome(targetPath));
+    const rel = relative(resolvedRoot, resolvedTarget);
+    if (rel === '..' || rel.startsWith('..' + sep) || isAbsolute(rel)) {
+      return false;
+    }
+    try {
+      if (existsSync(resolvedTarget)) {
+        const realTarget = realpathSync(resolvedTarget);
+        const realRel = relative(resolvedRoot, realTarget);
+        if (realRel === '..' || realRel.startsWith('..' + sep) || isAbsolute(realRel)) {
+          return false;
+        }
+      }
+    } catch {}
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Resolve a target path securely within root, throwing if path traversal is attempted */
+export function resolveSecurePath(root: string, targetPath: string): string {
+  const resolvedRoot = resolveRoot(root);
+  const resolvedTarget = resolve(resolvedRoot, expandHome(targetPath));
+  const rel = relative(resolvedRoot, resolvedTarget);
+  if (rel === '..' || rel.startsWith('..' + sep) || isAbsolute(rel)) {
+    throw new Error(`Access denied: path '${targetPath}' escapes project root`);
+  }
+  try {
+    if (existsSync(resolvedTarget)) {
+      const realTarget = realpathSync(resolvedTarget);
+      const realRel = relative(resolvedRoot, realTarget);
+      if (realRel === '..' || realRel.startsWith('..' + sep) || isAbsolute(realRel)) {
+        throw new Error(`Access denied: symlink path '${targetPath}' escapes project root`);
+      }
+    }
+  } catch (err: any) {
+    if (err.message && err.message.includes('Access denied')) throw err;
+  }
+  return resolvedTarget;
 }
 
 /** Get a stable display path relative to root in POSIX format */
