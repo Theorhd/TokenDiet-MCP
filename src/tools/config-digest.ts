@@ -1,6 +1,6 @@
-import { readFileSync, readdirSync, existsSync } from 'node:fs';
-import { join } from 'node:path';
-import { resolveRoot } from '../core/paths.js';
+import { readdirSync, existsSync } from 'node:fs';
+import { join, basename } from 'node:path';
+import { resolveRoot, resolveSecurePath } from '../core/paths.js';
 import { readFileSafe } from '../core/utils.js';
 import type { ConfigOutput, ConfigDigest } from '../types/index.js';
 import type { CacheManager } from '../core/cache.js';
@@ -18,7 +18,7 @@ export async function getConfigDigest(
   const singleFile = options.path;
 
   if (singleFile) {
-    const fullPath = join(projectRoot, singleFile);
+    const fullPath = resolveSecurePath(projectRoot, singleFile);
     const digest = parseConfigFile(fullPath);
     return { configs: digest ? [digest] : [] };
   }
@@ -68,7 +68,7 @@ function parseConfigFile(filePath: string): ConfigDigest | null {
   const content = readFileSafe(filePath);
   if (!content) return null;
 
-  const filename = filePath.split('/').pop() ?? '';
+  const filename = basename(filePath);
   const ext = filename.split('.').pop()?.toLowerCase() ?? '';
 
   try {

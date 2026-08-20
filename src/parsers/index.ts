@@ -92,6 +92,17 @@ function genericParse(language: string, content: string): Omit<FileOverview, 'fi
     for (const [kind, pattern] of Object.entries(patterns)) {
       const match = line.match(pattern);
       if (match && match[1]) {
+        if (kind === 'import') {
+          const mod = match[1].trim();
+          imports.push({
+            from: mod,
+            names: [],
+            isExternal: !mod.startsWith('.') && !mod.startsWith('/'),
+            isDefault: true,
+          });
+          break;
+        }
+
         const name = match[1];
         if (['if', 'for', 'while', 'switch', 'return', 'catch', 'throw', 'new', 'try'].includes(name)) continue;
 

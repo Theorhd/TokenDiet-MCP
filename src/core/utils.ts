@@ -1,9 +1,20 @@
-import { readFileSync, existsSync } from 'node:fs';
+import { readFileSync, existsSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 
-/** Read file contents safely */
-export function readFileSafe(filePath: string): string | null {
+/** Max file size (10 MB) to prevent OOM/DoS attacks */
+export const MAX_SAFE_FILE_SIZE_BYTES = 10 * 1024 * 1024;
+
+/** Read file contents safely with size capping */
+export function readFileSafe(filePath: string, maxBytes: number = MAX_SAFE_FILE_SIZE_BYTES): string | null {
   try {
+    try {
+      const st = statSync(filePath);
+      if (st && typeof st.size === 'number' && st.size > maxBytes) {
+        return null;
+      }
+    } catch {
+      // If statSync fails or is not mocked, proceed to readFileSync
+    }
     return readFileSync(filePath, 'utf-8');
   } catch {
     return null;
@@ -46,15 +57,36 @@ export function estimateTokens(text: string): number {
   return Math.ceil(text.length / 3.5);
 }
 
-/** Enforce a token budget on output */
+/** Enforce a token budget on output by truncating arrays if needed */
 export function enforceTokenBudget<T extends Record<string, unknown>>(
   data: T,
   maxTokens: number,
-  truncationKey: string,
+  truncationKey?: string,
 ): T & { _truncated?: string } {
   const json = JSON.stringify(data);
   const tokens = estimateTokens(json);
   if (tokens <= maxTokens) return data;
+
+  const copy = { ...data } as any;
+  if (truncationKey && Array.isArray(copy[truncationKey])) {
+    const arr = copy[truncationKey];
+    let low = 0;
+    let high = arr.length;
+    while (low < high) {
+      const mid = Math.floor((low + high) / 2);
+      copy[truncationKey] = arr.slice(0, mid);
+      if (estimateTokens(JSON.stringify(copy)) <= maxTokens) {
+        low = mid + 1;
+      } else {
+        high = mid;
+      }
+    }
+    const finalLen = Math.max(1, low - 1);
+    copy[truncationKey] = arr.slice(0, finalLen);
+    copy._truncated = `Truncated from ${arr.length} to ${finalLen} items to fit ${maxTokens} token budget`;
+    return copy;
+  }
+
   return { ...data, _truncated: `Output exceeds ${maxTokens} tokens (est. ${tokens}). Use more specific queries.` };
 }
 

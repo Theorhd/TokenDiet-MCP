@@ -1,7 +1,6 @@
-import { readFileSync, statSync } from 'node:fs';
-import { resolve, relative } from 'node:path';
+import { statSync } from 'node:fs';
 import { parseFile } from '../parsers/index.js';
-import { resolveRoot, displayPath } from '../core/paths.js';
+import { resolveRoot, displayPath, resolveSecurePath } from '../core/paths.js';
 import { readFileSafe } from '../core/utils.js';
 import type { FileOverview, SymbolInfo, ExportInfo } from '../types/index.js';
 import type { CacheManager } from '../core/cache.js';
@@ -18,7 +17,7 @@ export async function getFileOverview(
   options: FileOverviewOptions,
 ): Promise<FileOverview> {
   const projectRoot = resolveRoot(root);
-  const filePath = resolve(projectRoot, options.path);
+  const filePath = resolveSecurePath(projectRoot, options.path);
   const { detail = 'signatures', maxSymbols = 100 } = options;
 
   // Check cache first
@@ -39,8 +38,10 @@ export async function getFileOverview(
       } else if (detail === 'bodies') {
         const content = readFileSafe(filePath);
         if (content) {
+          const lines = content.split('\n');
           symbols = symbols.map(s => {
-            const bodyLines = content.split('\n').slice(s.line, s.line + 10).join('\n').slice(0, 200);
+            const startIdx = Math.max(0, s.line - 1);
+            const bodyLines = lines.slice(startIdx, startIdx + 10).join('\n').slice(0, 200);
             return { ...s, doc: s.doc || bodyLines.slice(0, 100) };
           });
         }
@@ -75,9 +76,10 @@ export async function getFileOverview(
   if (detail === 'names') {
     symbols = symbols.map(s => ({ ...s, signature: '', doc: '' }));
   } else if (detail === 'bodies') {
-    // Include a bit more context — first few lines of implementation
+    const lines = content.split('\n');
     symbols = symbols.map(s => {
-      const bodyLines = content.split('\n').slice(s.line, s.line + 10).join('\n').slice(0, 200);
+      const startIdx = Math.max(0, s.line - 1);
+      const bodyLines = lines.slice(startIdx, startIdx + 10).join('\n').slice(0, 200);
       return { ...s, doc: s.doc || bodyLines.slice(0, 100) };
     });
   }

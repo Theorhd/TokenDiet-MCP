@@ -92,32 +92,60 @@ export class WorkerPool {
     }
   }
 
-  private runWorkerTask(chunk: ParseTask[]): Promise<ParseResult[]> {
+  private runWorkerTask(chunk: ParseTask[], timeoutMs = 30000): Promise<ParseResult[]> {
     return new Promise((resolve, reject) => {
+      let isSettled = false;
+      let timer: NodeJS.Timeout | null = null;
+
       try {
         const worker = new Worker(new URL(import.meta.url), {
           execArgv: process.execArgv,
         });
 
-        worker.on('message', (results: ParseResult[]) => {
+        const cleanup = () => {
+          if (timer) clearTimeout(timer);
           worker.terminate().catch(() => {});
-          resolve(results);
+        };
+
+        timer = setTimeout(() => {
+          if (!isSettled) {
+            isSettled = true;
+            cleanup();
+            reject(new Error(`Worker timed out after ${timeoutMs}ms`));
+          }
+        }, timeoutMs);
+
+        worker.on('message', (results: ParseResult[]) => {
+          if (!isSettled) {
+            isSettled = true;
+            cleanup();
+            resolve(results);
+          }
         });
 
         worker.on('error', (err) => {
-          worker.terminate().catch(() => {});
-          reject(err);
+          if (!isSettled) {
+            isSettled = true;
+            cleanup();
+            reject(err);
+          }
         });
 
         worker.on('exit', (code) => {
-          if (code !== 0) {
+          if (!isSettled && code !== 0) {
+            isSettled = true;
+            cleanup();
             reject(new Error(`Worker stopped with exit code ${code}`));
           }
         });
 
         worker.postMessage(chunk);
       } catch (err) {
-        reject(err);
+        if (!isSettled) {
+          isSettled = true;
+          if (timer) clearTimeout(timer);
+          reject(err);
+        }
       }
     });
   }
