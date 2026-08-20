@@ -421,13 +421,55 @@ describe('findDeadCode', () => {
       expect(result.summary.exportsAnalyzed).toBe(3);
       expect(result.summary.cacheUsed).toBe(true);
     });
+    it('resolves multi-hop barrel re-exports transitively (A -> B -> C)', async () => {
+      const cache = createMockCache({
+        allFiles: [
+          { path: 'src/feature.ts', lang: 'ts', lines: 10, bytes: 200 },
+          { path: 'src/barrel1.ts', lang: 'ts', lines: 5, bytes: 100 },
+          { path: 'src/barrel2.ts', lang: 'ts', lines: 5, bytes: 100 },
+          { path: 'src/app.ts', lang: 'ts', lines: 15, bytes: 300 },
+        ],
+        filesWithSymbols: [
+          { path: 'src/feature.ts', lang: 'ts', lines: 10, bytes: 200 },
+          { path: 'src/barrel1.ts', lang: 'ts', lines: 5, bytes: 100 },
+          { path: 'src/barrel2.ts', lang: 'ts', lines: 5, bytes: 100 },
+        ],
+        fileOverviews: new Map([
+          ['src/feature.ts', {
+            lang: 'ts', lines: 10, bytes: 200, precision: 'full',
+            symbols: [
+              { name: 'usedFunc', kind: 'function', signature: 'export function usedFunc()', line: 1, doc: '', exported: 1 },
+              { name: 'unusedFunc', kind: 'function', signature: 'export function unusedFunc()', line: 5, doc: '', exported: 1 },
+            ],
+          }],
+          ['src/barrel1.ts', {
+            lang: 'ts', lines: 5, bytes: 100, precision: 'full',
+            symbols: [],
+          }],
+          ['src/barrel2.ts', {
+            lang: 'ts', lines: 5, bytes: 100, precision: 'full',
+            symbols: [],
+          }],
+        ]),
+        importGraph: [
+          // feature <- barrel1 <- barrel2 <- app
+          { from: 'src/barrel1.ts', to: './feature.js', names: ['usedFunc', 'unusedFunc'], isExternal: false },
+          { from: 'src/barrel2.ts', to: './barrel1.js', names: ['usedFunc'], isExternal: false },
+          { from: 'src/app.ts', to: './barrel2.js', names: ['usedFunc'], isExternal: false },
+        ],
+      });
+
+      const result = await findDeadCode(TEST_ROOT, cache);
+      expect(result.unusedExports.some(e => e.file === 'src/feature.ts' && e.symbol === 'unusedFunc')).toBe(true);
+      expect(result.unusedExports.some(e => e.file === 'src/feature.ts' && e.symbol === 'usedFunc')).toBe(false);
+    });
   });
 
   // ── No-cache (fallback) tests ───────────────────────────────
   describe('without cache (walk + parse fallback)', () => {
     it('returns empty and reports cacheUsed=false', async () => {
       const cache = createMockCache({
-        indexedAt: null, // No cache
+        indexedAt: null,
       });
 
       const result = await findDeadCode(TEST_ROOT, cache);

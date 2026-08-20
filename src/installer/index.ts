@@ -201,12 +201,15 @@ export async function runInstallerCli(
     if (allSuccess && !options.silent) {
       console.log('\n✨ Installation completed successfully!');
       console.log('💡 Restart your AI assistant / IDE to start exploring code with 70-90% token savings.\n');
+    } else if (!allSuccess) {
+      process.exitCode = 1;
     }
     return;
   }
 
   console.error(`Unknown command: ${command}`);
   printHelp();
+  process.exitCode = 1;
 }
 
 async function promptInteractiveSelection(): Promise<InstallTarget[]> {

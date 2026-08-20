@@ -1,4 +1,4 @@
-import { resolveRoot, displayPath } from '../core/paths.js';
+import { resolveRoot, displayPath, toPosix } from '../core/paths.js';
 import { walk } from '../core/walker.js';
 import { parseFile } from '../parsers/index.js';
 import { readFileSafe } from '../core/utils.js';
@@ -27,45 +27,57 @@ export async function searchSymbols(
     limit = 30,
   } = options;
 
-  // Try cache first
-  const cachedResults = cache.searchSymbols(query, kind, limit * 10, filePattern);
+  const isIndexed = !!cache.getIndexedAt();
 
-  if (cachedResults.length > 0) {
+  if (isIndexed) {
+    const cachedResults = cache.searchSymbols(query, kind, limit * 10, filePattern);
     let matches: SearchResult[] = cachedResults.map(r => ({
       name: r.name,
       kind: r.kind as SymbolKind,
-      file: r.file,
+      file: toPosix(r.file),
       line: r.line,
       signature: r.signature,
     }));
 
-    // Apply additional filters
+    // Filter language
     if (language) {
       matches = matches.filter(m => {
         const ext = m.file.split('.').pop()?.toLowerCase();
         return ext && isLanguageMatch(ext, language);
       });
     }
+
+    // Filter filePattern
     if (filePattern) {
-      const regexPattern = '^' + filePattern.replace(/\*\*/g, '___DOUBLESTAR___').replace(/\*/g, '[^/]*').replace(/___DOUBLESTAR___/g, '.*') + '$';
+      const regexPattern = '^' + toPosix(filePattern).replace(/\*\*/g, '___DOUBLESTAR___').replace(/\*/g, '[^/]*').replace(/___DOUBLESTAR___/g, '.*') + '$';
       const pattern = new RegExp(regexPattern, 'i');
       matches = matches.filter(m => pattern.test(m.file));
     }
 
-    const totalMatches = matches.length;
-    matches = matches.slice(0, limit);
+    // Rank results: exact match > prefix match > substring match
+    const qLower = query.toLowerCase();
+    matches.sort((a, b) => {
+      const aName = a.name.toLowerCase();
+      const bName = b.name.toLowerCase();
+      if (aName === qLower && bName !== qLower) return -1;
+      if (bName === qLower && aName !== qLower) return 1;
+      if (aName.startsWith(qLower) && !bName.startsWith(qLower)) return -1;
+      if (bName.startsWith(qLower) && !aName.startsWith(qLower)) return 1;
+      return a.file.localeCompare(b.file) || a.line - b.line;
+    });
 
+    const totalMatches = matches.length;
     return {
-      matches,
+      matches: matches.slice(0, limit),
       totalMatches,
       truncated: totalMatches > limit ? totalMatches - limit : 0,
     };
   }
 
-  // Fallback: brute-force scan (only for fresh projects)
+  // Fallback only when database is NOT indexed yet
   const result = walk(projectRoot, { maxDepth: 8, includeTests: true });
   const sourceFiles = result.entries.filter(e =>
-    !e.isDir && ['ts', 'tsx', 'js', 'jsx', 'py', 'go', 'rs', 'java', 'rb'].includes(e.lang),
+    !e.isDir && ['ts', 'tsx', 'js', 'jsx', 'py', 'go', 'rs', 'java', 'rb', 'cs', 'php'].includes(e.lang),
   );
 
   const allMatches: SearchResult[] = [];
@@ -74,7 +86,7 @@ export async function searchSymbols(
   for (const file of sourceFiles) {
     if (language && !isLanguageMatch(file.lang, language)) continue;
     if (filePattern) {
-      const regexPattern = '^' + filePattern.replace(/\*\*/g, '___DOUBLESTAR___').replace(/\*/g, '[^/]*').replace(/___DOUBLESTAR___/g, '.*') + '$';
+      const regexPattern = '^' + toPosix(filePattern).replace(/\*\*/g, '___DOUBLESTAR___').replace(/\*/g, '[^/]*').replace(/___DOUBLESTAR___/g, '.*') + '$';
       const pattern = new RegExp(regexPattern, 'i');
       if (!pattern.test(file.relative)) continue;
     }
@@ -90,7 +102,7 @@ export async function searchSymbols(
         allMatches.push({
           name: sym.name,
           kind: sym.kind,
-          file: file.relative,
+          file: toPosix(file.relative),
           line: sym.line,
           signature: sym.signature,
         });
@@ -99,6 +111,17 @@ export async function searchSymbols(
 
     if (allMatches.length >= limit * 3) break;
   }
+
+  // Rank matches
+  allMatches.sort((a, b) => {
+    const aName = a.name.toLowerCase();
+    const bName = b.name.toLowerCase();
+    if (aName === queryLower && bName !== queryLower) return -1;
+    if (bName === queryLower && aName !== queryLower) return 1;
+    if (aName.startsWith(queryLower) && !bName.startsWith(queryLower)) return -1;
+    if (bName.startsWith(queryLower) && !aName.startsWith(queryLower)) return 1;
+    return a.file.localeCompare(b.file) || a.line - b.line;
+  });
 
   const totalMatches = allMatches.length;
   const matches = allMatches.slice(0, limit);
@@ -114,7 +137,9 @@ function isLanguageMatch(ext: string, lang: string): boolean {
     go: ['go'],
     rust: ['rs'],
     java: ['java'],
-    ruby: ['rb'],
+    c_sharp: ['cs'],
+    ruby: ['rb', 'erb'],
+    php: ['php'],
   };
   return (map[lang] ?? [lang]).includes(ext);
 }

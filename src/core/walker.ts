@@ -1,6 +1,7 @@
-import { readFileSync, statSync, readdirSync } from 'node:fs';
-import { join, resolve, relative, dirname } from 'node:path';
+import { openSync, readSync, closeSync, statSync, readdirSync, realpathSync } from 'node:fs';
+import { join, relative } from 'node:path';
 import ignore from 'ignore';
+import { toPosix } from './paths.js';
 
 // ─── Always-skip patterns ───────────────────────────────────────
 const ALWAYS_SKIP = new Set([
@@ -39,6 +40,8 @@ export function detectLanguage(filePath: string): string {
     rs: 'rs',
     java: 'java',
     rb: 'rb', erb: 'rb',
+    cs: 'cs',
+    php: 'php',
     css: 'css', scss: 'scss', less: 'less',
     html: 'html', htm: 'html',
     json: 'json', yaml: 'yaml', yml: 'yaml', toml: 'toml',
@@ -75,7 +78,14 @@ export function shouldSkipFile(filePath: string): boolean {
 function loadGitignore(dir: string): ignore.Ignore | null {
   try {
     const giPath = join(dir, '.gitignore');
-    const content = readFileSync(giPath, 'utf-8');
+    const fd = openSync(giPath, 'r');
+    const buffer = Buffer.alloc(16384);
+    let content = '';
+    let bytesRead = 0;
+    while ((bytesRead = readSync(fd, buffer, 0, buffer.length, null)) > 0) {
+      content += buffer.toString('utf-8', 0, bytesRead);
+    }
+    closeSync(fd);
     const ig = ignore();
     ig.add(content);
     return ig;
@@ -87,7 +97,7 @@ function loadGitignore(dir: string): ignore.Ignore | null {
 // ─── Walker types ───────────────────────────────────────────────
 export interface WalkEntry {
   path: string;       // absolute path
-  relative: string;   // relative to root
+  relative: string;   // relative to root in POSIX /
   isDir: boolean;
   size: number;       // 0 for dirs
   lang: string;
@@ -119,12 +129,19 @@ export function walk(root: string, options: WalkOptions = {}): WalkResult {
   let skipped = 0;
   let partial = false;
 
+  const visitedRealPaths = new Set<string>();
+  try {
+    visitedRealPaths.add(realpathSync(root));
+  } catch {
+    // Ignore error getting root realpath
+  }
+
   // Stack of gitignore instances: root-level → current dir
   const igStack: ignore.Ignore[] = [];
   const rootIg = loadGitignore(root);
   if (rootIg) igStack.push(rootIg);
 
-  function shouldIgnore(relPath: string, isDir: boolean): boolean {
+  function shouldIgnore(relPath: string): boolean {
     const name = relPath.split('/').pop() ?? relPath;
     if (ALWAYS_SKIP.has(name)) return true;
     if (name.startsWith('.') && !ALLOWED_DOT_NAMES.has(name)) return true; // hidden files/dirs unless allowed
@@ -156,7 +173,7 @@ export function walk(root: string, options: WalkOptions = {}): WalkResult {
       }
 
       const fullPath = join(currentDir, name);
-      const relPath = relative(root, fullPath);
+      const relPath = toPosix(relative(root, fullPath));
 
       let isDir = false;
       let size = 0;
@@ -169,18 +186,27 @@ export function walk(root: string, options: WalkOptions = {}): WalkResult {
         continue;
       }
 
-      if (shouldIgnore(relPath, isDir)) {
+      if (shouldIgnore(relPath)) {
         skipped++;
         continue;
       }
 
-      // Handle symlinks — skip if no realpath
-      if (!isDir && shouldSkipFile(name)) {
-        skipped++;
-        continue;
-      }
-
+      // Handle symlinks and cycle prevention
       if (isDir) {
+        let dirRealPath = fullPath;
+        try {
+          dirRealPath = realpathSync(fullPath);
+        } catch {
+          skipped++;
+          continue;
+        }
+
+        if (visitedRealPaths.has(dirRealPath)) {
+          skipped++;
+          continue; // Prevent infinite cycle
+        }
+        visitedRealPaths.add(dirRealPath);
+
         entries.push({ path: fullPath, relative: relPath, isDir: true, size: 0, lang: '' });
 
         // Load any .gitignore at this level
@@ -191,8 +217,23 @@ export function walk(root: string, options: WalkOptions = {}): WalkResult {
 
         if (dirIg) igStack.pop();
       } else if (!dirsOnly) {
+        if (shouldSkipFile(name)) {
+          skipped++;
+          continue;
+        }
+
         // Skip test files if not including
-        if (!includeTests && (name.includes('.test.') || name.includes('.spec.') || relPath.includes('/test/') || relPath.includes('/__tests__/'))) {
+        const firstSeg = relPath.split('/')[0];
+        if (!includeTests && (
+          name.includes('.test.') ||
+          name.includes('.spec.') ||
+          relPath.includes('/test/') ||
+          relPath.includes('/tests/') ||
+          relPath.includes('/__tests__/') ||
+          firstSeg === 'test' ||
+          firstSeg === 'tests' ||
+          firstSeg === '__tests__'
+        )) {
           skipped++;
           continue;
         }
@@ -214,24 +255,45 @@ export function walk(root: string, options: WalkOptions = {}): WalkResult {
   return { entries, skipped, partial };
 }
 
-/** Count lines in a file quickly */
+/** Count lines in a file quickly via 64KB chunk streaming without large memory allocations */
 export function countLines(filePath: string): number {
+  let fd: number | null = null;
   try {
-    const content = readFileSync(filePath, 'utf-8');
-    return content.split('\n').length;
+    fd = openSync(filePath, 'r');
+    const buffer = Buffer.alloc(65536);
+    let bytesRead = 0;
+    let lines = 0;
+    let hasBytes = false;
+
+    while ((bytesRead = readSync(fd, buffer, 0, buffer.length, null)) > 0) {
+      hasBytes = true;
+      for (let i = 0; i < bytesRead; i++) {
+        if (buffer[i] === 10) { // '\n'
+          lines++;
+        }
+      }
+    }
+    closeSync(fd);
+    fd = null;
+    return hasBytes ? lines + 1 : 0;
   } catch {
+    if (fd !== null) {
+      try { closeSync(fd); } catch { /* ignore */ }
+    }
     return 0;
   }
 }
 
 /** Get file count for a directory entry */
 export function countFilesInDir(entries: WalkEntry[], dirRelative: string): number {
-  return entries.filter(e => !e.isDir && e.relative.startsWith(dirRelative + '/')).length;
+  const normDir = toPosix(dirRelative);
+  return entries.filter(e => !e.isDir && e.relative.startsWith(normDir + '/')).length;
 }
 
 /** Get total LOC for files in a directory */
 export function countLocInDir(entries: WalkEntry[], dirRelative: string): number {
+  const normDir = toPosix(dirRelative);
   return entries
-    .filter(e => !e.isDir && e.relative.startsWith(dirRelative + '/'))
+    .filter(e => !e.isDir && e.relative.startsWith(normDir + '/'))
     .reduce((sum, e) => sum + countLines(e.path), 0);
 }

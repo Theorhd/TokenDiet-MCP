@@ -1,4 +1,4 @@
-import { resolveRoot, displayPath } from '../core/paths.js';
+import { resolveRoot, displayPath, toPosix } from '../core/paths.js';
 import { walk } from '../core/walker.js';
 import { parseFile } from '../parsers/index.js';
 import { readFileSafe } from '../core/utils.js';
@@ -41,8 +41,7 @@ export async function findDeadCode(
   const entryPoints = await getEntryPoints(root, cache);
   const entryPointPaths = new Set<string>();
   for (const ep of entryPoints.entryPoints) {
-    // Normalize: remove trailing slashes from directory entries
-    entryPointPaths.add(ep.path.replace(/\/$/, ''));
+    entryPointPaths.add(toPosix(ep.path).replace(/\/$/, ''));
   }
 
   // ── 2. Gather data (cache-first, walk as fallback) ────────────
@@ -50,53 +49,52 @@ export async function findDeadCode(
   let cacheUsed = false;
 
   const fileExports = new Map<string, FileExport[]>();
+  const fileSymbolsCount = new Map<string, number>();
   const allFiles = new Set<string>();
   let rawImports: RawImport[] = [];
 
   if (indexedAt) {
     cacheUsed = true;
 
-    // Get all files from cache
     const cachedFiles = cache.getAllFiles();
     for (const f of cachedFiles) {
-      allFiles.add(f.path);
+      allFiles.add(toPosix(f.path));
     }
 
-    // Get files that have symbols — we need exports
     const filesWithSymbols = cache.getFilesWithSymbols();
     for (const f of filesWithSymbols) {
       const overview = cache.getFileOverview(f.path);
       if (overview) {
         const exports: FileExport[] = [];
+        fileSymbolsCount.set(toPosix(f.path), overview.symbols.length);
         for (const sym of overview.symbols) {
           if (sym.exported) {
             exports.push({ name: sym.name, kind: sym.kind as SymbolKind, line: sym.line });
           }
         }
         if (exports.length > 0) {
-          fileExports.set(f.path, exports);
+          fileExports.set(toPosix(f.path), exports);
         }
       }
     }
 
-    // Get import graph from cache
     rawImports = cache.getImportGraph('').filter(imp => !imp.isExternal);
   } else {
-    // Fallback: walk + parse (no cache available)
     const result = walk(projectRoot, { maxDepth: 8, includeTests: true });
     const sourceFiles = result.entries.filter(
-      e => !e.isDir && ['ts', 'tsx', 'js', 'jsx', 'py', 'go', 'rs', 'java', 'rb'].includes(e.lang),
+      e => !e.isDir && ['ts', 'tsx', 'js', 'jsx', 'py', 'go', 'rs', 'java', 'rb', 'cs', 'php'].includes(e.lang),
     );
 
     for (const file of sourceFiles) {
-      allFiles.add(file.relative);
+      const posixRel = toPosix(file.relative);
+      allFiles.add(posixRel);
 
       const content = readFileSafe(file.path);
       if (!content) continue;
 
       const parsed = parseFile(file.path, content);
+      fileSymbolsCount.set(posixRel, parsed.symbols.length);
 
-      // Collect exports
       const exports: FileExport[] = [];
       for (const sym of parsed.symbols) {
         if (sym.exported) {
@@ -104,14 +102,13 @@ export async function findDeadCode(
         }
       }
       if (exports.length > 0) {
-        fileExports.set(file.relative, exports);
+        fileExports.set(posixRel, exports);
       }
 
-      // Collect non-external imports
       for (const imp of parsed.imports) {
         if (!imp.isExternal) {
           rawImports.push({
-            from: file.relative,
+            from: posixRel,
             to: imp.from,
             names: imp.names,
             isExternal: false,
@@ -126,6 +123,14 @@ export async function findDeadCode(
   const filesWithIncomingImports = new Set<string>();
   const filesWithSideEffectImports = new Set<string>();
 
+  // A file is an intermediate pass-through re-exporter if it has 0 symbols in fileOverviews and is not an entry point
+  const isIntermediateBarrel = (file: string): boolean => {
+    if (entryPointPaths.has(file)) return false;
+    // If it has explicitly recorded symbols > 0, it has its own logic
+    return fileSymbolsCount.has(file) && (fileSymbolsCount.get(file) ?? 0) === 0;
+  };
+
+  // Step 3a: Non-intermediate files register direct demand
   for (const imp of rawImports) {
     const target = resolveImportTarget(imp.from, imp.to, allFiles);
     if (!target) continue;
@@ -133,18 +138,52 @@ export async function findDeadCode(
     filesWithIncomingImports.add(target);
 
     if (imp.names.length === 0) {
-      // Side-effect import: `import './side-effects'`
       filesWithSideEffectImports.add(target);
       continue;
     }
 
-    let namesSet = importedNames.get(target);
-    if (!namesSet) {
-      namesSet = new Set();
-      importedNames.set(target, namesSet);
+    if (!isIntermediateBarrel(imp.from)) {
+      let namesSet = importedNames.get(target);
+      if (!namesSet) {
+        namesSet = new Set();
+        importedNames.set(target, namesSet);
+      }
+      for (const name of imp.names) {
+        namesSet.add(name);
+      }
     }
-    for (const name of imp.names) {
-      namesSet.add(name);
+  }
+
+  // Step 3b: Transitive propagation of demand through intermediate barrel chains
+  let changed = true;
+  let passes = 0;
+  const maxPasses = 10;
+
+  while (changed && passes < maxPasses) {
+    changed = false;
+    passes++;
+
+    for (const imp of rawImports) {
+      if (!isIntermediateBarrel(imp.from)) continue;
+
+      const target = resolveImportTarget(imp.from, imp.to, allFiles);
+      if (!target) continue;
+
+      const incomingDemandOnImporter = importedNames.get(imp.from);
+      if (!incomingDemandOnImporter || incomingDemandOnImporter.size === 0) continue;
+
+      let targetNames = importedNames.get(target);
+      if (!targetNames) {
+        targetNames = new Set();
+        importedNames.set(target, targetNames);
+      }
+
+      for (const name of incomingDemandOnImporter) {
+        if ((imp.names.length === 0 || imp.names.includes(name)) && !targetNames.has(name)) {
+          targetNames.add(name);
+          changed = true;
+        }
+      }
     }
   }
 
@@ -155,10 +194,7 @@ export async function findDeadCode(
   let filesAnalyzed = 0;
 
   for (const [filePath, exports] of fileExports) {
-    // Skip test files unless explicitly included
     if (!includeTests && isTestFile(filePath)) continue;
-
-    // Skip files matching ignore patterns
     if (ignorePatterns.length > 0 && matchesAnyPattern(filePath, ignorePatterns)) continue;
 
     filesAnalyzed++;
@@ -167,13 +203,10 @@ export async function findDeadCode(
     const hasIncomingImports = filesWithIncomingImports.has(filePath);
     const hasSideEffectImport = filesWithSideEffectImports.has(filePath);
     const isEntryPoint = entryPointPaths.has(filePath) ||
-      // Also check without extension and with trailing content
-      [...entryPointPaths].some(ep => filePath.startsWith(ep) || ep.startsWith(filePath));
+      [...entryPointPaths].some(ep => filePath === ep || filePath.startsWith(ep + '/') || ep.startsWith(filePath + '/'));
 
-    // Case A: side-effect import exists — file is intentionally used, skip all exports
     if (hasSideEffectImport) continue;
 
-    // If not an entry point AND no incoming imports → file is dead
     if (!isEntryPoint && !hasIncomingImports) {
       unusedFiles.push({
         file: filePath,
@@ -181,19 +214,14 @@ export async function findDeadCode(
         kind: 'module',
         line: 1,
         confidence: 'medium',
-        reason: 'File is never imported by any other file',
+        reason: 'File is never imported by any other file and is not an entry point',
       });
     }
 
-    // Check individual exports regardless of entry point status
-    // An entry point can still have unused exports
     const fileImportedNames = importedNames.get(filePath);
 
-    // If no specific names imported from this file (no imports, or only
-    // namespace/default imports that don't match any export name):
     if (!fileImportedNames || fileImportedNames.size === 0) {
       if (!hasIncomingImports) {
-        // No one imports from this file at all — all exports are dead (high confidence)
         for (const exp of exports) {
           unusedExports.push({
             file: filePath,
@@ -206,18 +234,27 @@ export async function findDeadCode(
               : 'File has no incoming imports and is not an entry point',
           });
         }
+      } else {
+        if (minConfidence !== 'high') {
+          for (const exp of exports) {
+            unusedExports.push({
+              file: filePath,
+              symbol: exp.name,
+              kind: exp.kind,
+              line: exp.line,
+              confidence: 'medium',
+              reason: 'File has incoming imports (possibly namespace/default imports) but this symbol name is never imported directly',
+            });
+          }
+        }
       }
-      // else: file has incoming imports but no specific names captured
-      // (likely namespace imports like `import * as X`). Skip — we can't be sure.
       continue;
     }
 
-    // File has specific imported names — check each export
     const anyNameMatches = exports.some(e => fileImportedNames.has(e.name));
 
     for (const exp of exports) {
       if (!fileImportedNames.has(exp.name)) {
-        // Not imported by name
         const confidence = anyNameMatches ? 'high' : 'medium';
         const reason = anyNameMatches
           ? 'Exported but never imported by name from any file'
@@ -237,8 +274,6 @@ export async function findDeadCode(
     }
   }
 
-  // ── 5. Sort and return ────────────────────────────────────────
-  // Sort by confidence (high first), then by file path
   unusedExports.sort((a, b) => {
     if (a.confidence !== b.confidence) return a.confidence === 'high' ? -1 : 1;
     return a.file.localeCompare(b.file) || a.line - b.line;
@@ -260,27 +295,32 @@ export async function findDeadCode(
 
 // ─── Helpers ─────────────────────────────────────────────────────
 
-/** Resolve a relative import spec to a known file path */
 function resolveImportTarget(
   fromFile: string,
   importSpec: string,
   knownFiles: Set<string>,
 ): string | null {
-  // Normalize the from-file directory
-  const lastSlash = fromFile.lastIndexOf('/');
-  const fromDir = lastSlash >= 0 ? fromFile.substring(0, lastSlash) : '';
+  const normFromFile = toPosix(fromFile);
+  const lastSlash = normFromFile.lastIndexOf('/');
+  const fromDir = lastSlash >= 0 ? normFromFile.substring(0, lastSlash) : '';
 
-  // Resolve relative to the importing file's directory
   let resolved: string;
   if (importSpec.startsWith('.')) {
     resolved = fromDir ? `${fromDir}/${importSpec}` : importSpec;
   } else if (importSpec.startsWith('/')) {
-    resolved = importSpec.slice(1); // absolute within project
+    resolved = importSpec.slice(1);
+  } else if (importSpec.startsWith('@/') || importSpec.startsWith('~/')) {
+    resolved = importSpec.slice(2);
+    if (!knownFiles.has(resolved) && knownFiles.has(`src/${resolved}`)) {
+      resolved = `src/${resolved}`;
+    }
   } else {
-    return null; // external — shouldn't happen (filtered earlier)
+    resolved = importSpec;
+    if (!knownFiles.has(resolved) && knownFiles.has(`src/${resolved}`)) {
+      resolved = `src/${resolved}`;
+    }
   }
 
-  // Normalize path (resolve . and ..)
   const parts = resolved.split('/');
   const normalized: string[] = [];
   for (const part of parts) {
@@ -292,11 +332,8 @@ function resolveImportTarget(
   }
   resolved = normalized.join('/');
 
-  // Check exact match
   if (knownFiles.has(resolved)) return resolved;
 
-  // If the import already has an extension (e.g., .js in TS projects),
-  // try the same path with alternative extensions
   const extMatch = resolved.match(/\.(js|jsx|mjs|cjs)$/);
   if (extMatch) {
     const base = resolved.slice(0, -extMatch[0].length);
@@ -305,17 +342,15 @@ function resolveImportTarget(
       const candidate = base + ext;
       if (candidate !== resolved && knownFiles.has(candidate)) return candidate;
     }
-    // Also try index files
     for (const idx of ['/index.ts', '/index.js', '/index.tsx']) {
       const candidate = base + idx;
       if (knownFiles.has(candidate)) return candidate;
     }
   }
 
-  // Probe common extensions and index files
   const extensions = [
-    '.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs',
-    '.py', '.go', '.rs', '.java', '.rb',
+    '.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs', '.mts', '.cts',
+    '.py', '.go', '.rs', '.java', '.rb', '.cs', '.php',
     '/index.ts', '/index.js', '/index.tsx', '/index.py', '/index.go', '/index.rs',
     '/__init__.py',
   ];
@@ -328,24 +363,24 @@ function resolveImportTarget(
   return null;
 }
 
-/** Check if a file path is a test file */
 function isTestFile(filePath: string): boolean {
-  // Test directories — check anywhere in path, not just start
-  if (/\/(?:tests?|__tests__|spec)\//.test(filePath)) return true;
-  // Test file name patterns: *.test.ts, *.spec.tsx, test_*.py, *_test.go
-  if (/\.(?:test|spec)\.(?:ts|tsx|js|jsx|py|go|rs)$/.test(filePath)) return true;
-  if (/(?:^|\/)test_[^/]+\.py$/.test(filePath)) return true;
-  if (/_[^/]*_test\.go$/.test(filePath)) return true;
+  const norm = toPosix(filePath);
+  if (norm.startsWith('test/') || norm.startsWith('tests/') || norm.startsWith('__tests__/')) return true;
+  if (/\/(?:tests?|__tests__|spec)\//.test(norm)) return true;
+  if (/\.(?:test|spec)\.(?:ts|tsx|js|jsx|py|go|rs|cs|rb)$/.test(norm)) return true;
+  if (/(?:^|\/)test_[^/]+\.py$/.test(norm)) return true;
+  if (/_[^/]*_test\.go$/.test(norm)) return true;
   return false;
 }
 
-/** Check if a file path matches any of the given glob patterns */
 function matchesAnyPattern(filePath: string, patterns: string[]): boolean {
+  const norm = toPosix(filePath);
   for (const pattern of patterns) {
+    const normPattern = toPosix(pattern);
     const regex = new RegExp(
-      '^' + pattern.replace(/\*\*/g, '___DOUBLESTAR___').replace(/\*/g, '[^/]*').replace(/___DOUBLESTAR___/g, '.*') + '$',
+      '^' + normPattern.replace(/\*\*/g, '___DOUBLESTAR___').replace(/\*/g, '[^/]*').replace(/___DOUBLESTAR___/g, '.*') + '$',
     );
-    if (regex.test(filePath)) return true;
+    if (regex.test(norm)) return true;
   }
   return false;
 }

@@ -88,7 +88,7 @@ export async function getFileOverview(
     Math.floor(stats.mtimeMs),
     stats.size,
     parsed.language,
-    'regex',
+    parsed.tier ?? 'regex',
     parsed.lines,
     parsed.bytes,
     parsed.precision,

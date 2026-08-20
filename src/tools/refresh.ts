@@ -22,23 +22,31 @@ export async function refreshIndex(
       if (entry.isDir) continue;
       validPaths.add(entry.relative);
 
+      let mtimeMs = Date.now();
+      try {
+        const st = statSync(entry.path);
+        mtimeMs = st.mtimeMs;
+      } catch {
+        // Fallback
+      }
+      const floorMtime = Math.floor(mtimeMs);
+
+      // Incremental indexing: skip reading and parsing if file is unmodified
+      if (cache.isFileUnchanged(entry.relative, floorMtime, entry.size)) {
+        continue;
+      }
+
       const content = readFileSafe(entry.path);
       if (!content) continue;
 
       try {
-        let mtimeMs = Date.now();
-        try {
-          const st = statSync(entry.path);
-          mtimeMs = st.mtimeMs;
-        } catch { /* fallback to Date.now() */ }
-
         const parsed = parseFile(entry.path, content);
         cache.upsertFile(
           entry.relative,
-          Math.floor(mtimeMs),
+          floorMtime,
           entry.size,
           entry.lang,
-          'regex',
+          parsed.tier ?? 'regex',
           parsed.lines,
           parsed.bytes,
           parsed.precision,

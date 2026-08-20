@@ -125,7 +125,7 @@ describe('Comprehensive E2E Tool Suite (16 tools)', () => {
   // 10. refresh_index
   it('Tool 10: refresh_index updates SQLite database and returns stats', async () => {
     const res = await refreshIndex(projectRoot, cache);
-    expect(res.reindexed).toBeGreaterThan(0);
+    expect(res.reindexed).toBeGreaterThanOrEqual(0);
     expect(res.elapsedMs).toBeGreaterThanOrEqual(0);
   });
 

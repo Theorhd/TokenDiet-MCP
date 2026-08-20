@@ -16,6 +16,7 @@ export interface ExportInfo {
   name: string;
   kind: SymbolKind;
   line: number;
+  endLine?: number;
   signature: string;       // ≤ 90 chars, truncated with …
   doc: string;             // first sentence of docblock, ≤ 200 chars
   exported: boolean;       // always true here, but used in SymbolInfo
@@ -25,6 +26,7 @@ export interface SymbolInfo {
   name: string;
   kind: SymbolKind;
   line: number;
+  endLine?: number;
   signature: string;
   doc: string;
   exported: boolean;
@@ -36,6 +38,7 @@ export type Precision = 'full' | 'approx';
 export interface FileOverview {
   file: string;
   language: string;
+  tier?: 'tree-sitter' | 'regex';
   purpose: string;
   lines: number;
   bytes: number;
@@ -295,9 +298,52 @@ export interface FoldedFileOutput {
   content: string;
 }
 
+// ─── Impact Analysis ────────────────────────────────────────────
+export interface ImpactAnalysisOutput {
+  target: string;
+  directDependents: string[];
+  indirectDependents: Array<{ file: string; depth: number }>;
+  impactedTests: string[];
+  totalImpactedFiles: number;
+  blastRadius: 'low' | 'medium' | 'high' | 'critical';
+}
+
+// ─── Diff Summary ───────────────────────────────────────────────
+export interface DiffSummaryOutput {
+  branch: string;
+  filesChanged: number;
+  totalAddedSymbols: number;
+  totalModifiedSymbols: number;
+  totalRemovedSymbols: number;
+  criticalChanges: Array<{
+    file: string;
+    impactedFiles: number;
+    impactedTests: string[];
+    blastRadius: string;
+  }>;
+  summaryText: string;
+}
+
+// ─── Workspaces ─────────────────────────────────────────────────
+export interface WorkspacePackage {
+  name: string;
+  path: string;
+  version?: string;
+  dependencies?: string[];
+  devDependencies?: string[];
+  scripts?: Record<string, string>;
+}
+
+export interface WorkspacesOutput {
+  isMonorepo: boolean;
+  monorepoType?: 'pnpm' | 'npm-yarn' | 'turbo' | 'lerna' | 'cargo' | 'go-work';
+  rootPackageName?: string;
+  packages: WorkspacePackage[];
+  totalPackages: number;
+}
+
 // ─── Tool Context ───────────────────────────────────────────────
 export interface ToolContext {
   root: string;
-  cache: unknown; // CacheManager — circular ref avoided via interface
+  cache: unknown;
 }
-

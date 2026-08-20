@@ -2,6 +2,10 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
 import { CacheManager } from './core/cache.js';
+import { resolveRoot } from './core/paths.js';
+import { treeSitterManager } from './parsers/treesitter.js';
+
+// Tools
 import { getProjectSummary } from './tools/project-summary.js';
 import { getDirectoryTree } from './tools/directory-tree.js';
 import { getFileOverview } from './tools/file-overview.js';
@@ -18,7 +22,35 @@ import { getTypeDefinitions } from './tools/type-definitions.js';
 import { getSymbolReferences } from './tools/symbol-references.js';
 import { getChangedSymbols } from './tools/changed-symbols.js';
 import { getFoldedFile } from './tools/folded-file.js';
+import { getImpactAnalysis } from './tools/impact-analysis.js';
+import { getDiffSummary } from './tools/diff-summary.js';
+import { getWorkspaces } from './tools/workspaces.js';
 
+// ─── Cache Pool for Server Lifecycle ──────────────────────────────
+const cachePool = new Map<string, CacheManager>();
+
+export function getPooledCache(root?: string): CacheManager {
+  const projectRoot = resolveRoot(root);
+  let cache = cachePool.get(projectRoot);
+  if (!cache) {
+    cache = new CacheManager(projectRoot);
+    cachePool.set(projectRoot, cache);
+  }
+  return cache;
+}
+
+export function closeAllCaches(): void {
+  for (const cache of cachePool.values()) {
+    try {
+      cache.close();
+    } catch {
+      // Ignore
+    }
+  }
+  cachePool.clear();
+}
+
+// ─── MCP Server Factory ──────────────────────────────────────────
 export function createServer(): McpServer {
   const server = new McpServer({
     name: 'tokendiet',
@@ -40,15 +72,12 @@ export function createServer(): McpServer {
       }),
     },
     async (params) => {
-      const cache = new CacheManager(params.root ?? process.cwd());
-      try {
-        const result = await getProjectSummary(params.root, cache, params.refresh);
-        return {
-          content: [{ type: 'text', text: JSON.stringify(result) }],
-        };
-      } finally {
-        cache.close();
-      }
+      const cache = getPooledCache(params.root);
+      const result = await getProjectSummary(params.root, cache, params.refresh);
+      return {
+        content: [{ type: 'text', text: JSON.stringify(result) }],
+        structuredContent: result as unknown as Record<string, unknown>,
+      };
     },
   );
 
@@ -66,21 +95,17 @@ export function createServer(): McpServer {
       }),
     },
     async (params) => {
-      const cache = new CacheManager(params.root ?? process.cwd());
-      try {
-        const result = await getDirectoryTree(params.root, cache, {
-          depth: params.depth,
-          dirsOnly: params.dirsOnly,
-          includeTests: params.includeTests,
-          maxEntries: params.maxEntries,
-          format: params.format,
-        });
-        return {
-          content: [{ type: 'text', text: result }],
-        };
-      } finally {
-        cache.close();
-      }
+      const cache = getPooledCache(params.root);
+      const result = await getDirectoryTree(params.root, cache, {
+        depth: params.depth,
+        dirsOnly: params.dirsOnly,
+        includeTests: params.includeTests,
+        maxEntries: params.maxEntries,
+        format: params.format,
+      });
+      return {
+        content: [{ type: 'text', text: result }],
+      };
     },
   );
 
@@ -97,19 +122,16 @@ export function createServer(): McpServer {
       }),
     },
     async (params) => {
-      const cache = new CacheManager(params.root ?? process.cwd());
-      try {
-        const result = await getFileOverview(params.root, cache, {
-          path: params.path,
-          detail: params.detail,
-          maxSymbols: params.maxSymbols,
-        });
-        return {
-          content: [{ type: 'text', text: JSON.stringify(result) }],
-        };
-      } finally {
-        cache.close();
-      }
+      const cache = getPooledCache(params.root);
+      const result = await getFileOverview(params.root, cache, {
+        path: params.path,
+        detail: params.detail,
+        maxSymbols: params.maxSymbols,
+      });
+      return {
+        content: [{ type: 'text', text: JSON.stringify(result) }],
+        structuredContent: result as unknown as Record<string, unknown>,
+      };
     },
   );
 
@@ -120,28 +142,25 @@ export function createServer(): McpServer {
       description: 'Get the import/export dependency graph between modules. Shows how files depend on each other, external dependencies, hubs (high in-degree), and cycles.',
       inputSchema: rootSchema.extend({
         module: z.string().optional().describe('Focus on a specific module (file or directory path)'),
-        depth: z.number().optional().default(2).describe('How deep to traverse dependencies'),
+        depth: z.number().optional().describe('How deep to traverse dependencies'),
         direction: z.enum(['out', 'in', 'both']).optional().default('out').describe('Dependency direction: out (what this imports), in (what imports this), both'),
         maxEdges: z.number().optional().default(200).describe('Maximum edges to return'),
         aggregate: z.boolean().optional().default(true).describe('Aggregate by directory for whole-project view'),
       }),
     },
     async (params) => {
-      const cache = new CacheManager(params.root ?? process.cwd());
-      try {
-        const result = await getModuleGraph(params.root, cache, {
-          module: params.module,
-          depth: params.depth,
-          direction: params.direction,
-          maxEdges: params.maxEdges,
-          aggregate: params.aggregate,
-        });
-        return {
-          content: [{ type: 'text', text: JSON.stringify(result) }],
-        };
-      } finally {
-        cache.close();
-      }
+      const cache = getPooledCache(params.root);
+      const result = await getModuleGraph(params.root, cache, {
+        module: params.module,
+        depth: params.depth,
+        direction: params.direction,
+        maxEdges: params.maxEdges,
+        aggregate: params.aggregate,
+      });
+      return {
+        content: [{ type: 'text', text: JSON.stringify(result) }],
+        structuredContent: result as unknown as Record<string, unknown>,
+      };
     },
   );
 
@@ -151,29 +170,26 @@ export function createServer(): McpServer {
     {
       description: 'Search for symbols (functions, classes, interfaces, etc.) by name across the entire project. Case-insensitive, supports * globs.',
       inputSchema: rootSchema.extend({
-        query: z.string().describe('Symbol name to search for (case-insensitive, supports * glob)'),
+        query: z.string().describe('Symbol name to search for (case-insensitive, substring match)'),
         kind: z.enum(['function', 'class', 'interface', 'type', 'enum', 'const', 'struct', 'trait', 'method', 'all']).optional().default('all').describe('Filter by symbol kind'),
-        language: z.string().optional().describe('Filter by language (typescript, javascript, python, go, rust, java, ruby)'),
+        language: z.string().optional().describe('Filter by language (typescript, javascript, python, go, rust, java, c_sharp, ruby)'),
         filePattern: z.string().optional().describe('Filter by file pattern (e.g., "*.ts", "src/**")'),
         limit: z.number().optional().default(30).describe('Maximum results'),
       }),
     },
     async (params) => {
-      const cache = new CacheManager(params.root ?? process.cwd());
-      try {
-        const result = await searchSymbols(params.root, cache, {
-          query: params.query,
-          kind: params.kind,
-          language: params.language,
-          filePattern: params.filePattern,
-          limit: params.limit,
-        });
-        return {
-          content: [{ type: 'text', text: JSON.stringify(result) }],
-        };
-      } finally {
-        cache.close();
-      }
+      const cache = getPooledCache(params.root);
+      const result = await searchSymbols(params.root, cache, {
+        query: params.query,
+        kind: params.kind,
+        language: params.language,
+        filePattern: params.filePattern,
+        limit: params.limit,
+      });
+      return {
+        content: [{ type: 'text', text: JSON.stringify(result) }],
+        structuredContent: result as unknown as Record<string, unknown>,
+      };
     },
   );
 
@@ -187,17 +203,14 @@ export function createServer(): McpServer {
       }),
     },
     async (params) => {
-      const cache = new CacheManager(params.root ?? process.cwd());
-      try {
-        const result = await getConfigDigest(params.root, cache, {
-          path: params.path,
-        });
-        return {
-          content: [{ type: 'text', text: JSON.stringify(result) }],
-        };
-      } finally {
-        cache.close();
-      }
+      const cache = getPooledCache(params.root);
+      const result = await getConfigDigest(params.root, cache, {
+        path: params.path,
+      });
+      return {
+        content: [{ type: 'text', text: JSON.stringify(result) }],
+        structuredContent: result as unknown as Record<string, unknown>,
+      };
     },
   );
 
@@ -209,15 +222,12 @@ export function createServer(): McpServer {
       inputSchema: rootSchema,
     },
     async (params) => {
-      const cache = new CacheManager(params.root ?? process.cwd());
-      try {
-        const result = await getEntryPoints(params.root, cache);
-        return {
-          content: [{ type: 'text', text: JSON.stringify(result) }],
-        };
-      } finally {
-        cache.close();
-      }
+      const cache = getPooledCache(params.root);
+      const result = await getEntryPoints(params.root, cache);
+      return {
+        content: [{ type: 'text', text: JSON.stringify(result) }],
+        structuredContent: result as unknown as Record<string, unknown>,
+      };
     },
   );
 
@@ -231,17 +241,14 @@ export function createServer(): McpServer {
       }),
     },
     async (params) => {
-      const cache = new CacheManager(params.root ?? process.cwd());
-      try {
-        const result = await getArchitectureNotes(params.root, cache, {
-          maxWords: params.maxWords,
-        });
-        return {
-          content: [{ type: 'text', text: JSON.stringify(result) }],
-        };
-      } finally {
-        cache.close();
-      }
+      const cache = getPooledCache(params.root);
+      const result = await getArchitectureNotes(params.root, cache, {
+        maxWords: params.maxWords,
+      });
+      return {
+        content: [{ type: 'text', text: JSON.stringify(result) }],
+        structuredContent: result as unknown as Record<string, unknown>,
+      };
     },
   );
 
@@ -249,19 +256,16 @@ export function createServer(): McpServer {
   server.registerTool(
     'refresh_index',
     {
-      description: 'Force a full re-index of the project. Call after major refactors or when the cache seems stale.',
+      description: 'Force an incremental/full re-index of the project cache. Call after major refactors or when the cache seems stale.',
       inputSchema: rootSchema,
     },
     async (params) => {
-      const cache = new CacheManager(params.root ?? process.cwd());
-      try {
-        const result = await refreshIndex(params.root, cache);
-        return {
-          content: [{ type: 'text', text: JSON.stringify(result) }],
-        };
-      } finally {
-        cache.close();
-      }
+      const cache = getPooledCache(params.root);
+      const result = await refreshIndex(params.root, cache);
+      return {
+        content: [{ type: 'text', text: JSON.stringify(result) }],
+        structuredContent: result as unknown as Record<string, unknown>,
+      };
     },
   );
 
@@ -273,23 +277,20 @@ export function createServer(): McpServer {
       inputSchema: rootSchema.extend({
         includeTests: z.boolean().optional().default(false).describe('Include test files in the analysis'),
         ignorePatterns: z.array(z.string()).optional().describe('Glob patterns for files to skip (e.g., "src/generated/**")'),
-        minConfidence: z.enum(['high', 'medium']).optional().default('medium').describe('Minimum confidence threshold. "high" returns only exports from files with zero incoming imports. "medium" also returns exports whose names are never imported directly (may include namespace-imported symbols).'),
+        minConfidence: z.enum(['high', 'medium']).optional().default('medium').describe('Minimum confidence threshold. "high" returns only exports from files with zero incoming imports. "medium" also returns exports whose names are never imported directly.'),
       }),
     },
     async (params) => {
-      const cache = new CacheManager(params.root ?? process.cwd());
-      try {
-        const result = await findDeadCode(params.root, cache, {
-          includeTests: params.includeTests,
-          ignorePatterns: params.ignorePatterns,
-          minConfidence: params.minConfidence,
-        });
-        return {
-          content: [{ type: 'text', text: JSON.stringify(result) }],
-        };
-      } finally {
-        cache.close();
-      }
+      const cache = getPooledCache(params.root);
+      const result = await findDeadCode(params.root, cache, {
+        includeTests: params.includeTests,
+        ignorePatterns: params.ignorePatterns,
+        minConfidence: params.minConfidence,
+      });
+      return {
+        content: [{ type: 'text', text: JSON.stringify(result) }],
+        structuredContent: result as unknown as Record<string, unknown>,
+      };
     },
   );
 
@@ -304,18 +305,15 @@ export function createServer(): McpServer {
       }),
     },
     async (params) => {
-      const cache = new CacheManager(params.root ?? process.cwd());
-      try {
-        const result = await getGlobalProject(params.root, cache, {
-          refresh: params.refresh,
-          depth: params.depth,
-        });
-        return {
-          content: [{ type: 'text', text: JSON.stringify(result) }],
-        };
-      } finally {
-        cache.close();
-      }
+      const cache = getPooledCache(params.root);
+      const result = await getGlobalProject(params.root, cache, {
+        refresh: params.refresh,
+        depth: params.depth,
+      });
+      return {
+        content: [{ type: 'text', text: JSON.stringify(result) }],
+        structuredContent: result as unknown as Record<string, unknown>,
+      };
     },
   );
 
@@ -331,19 +329,16 @@ export function createServer(): McpServer {
       }),
     },
     async (params) => {
-      const cache = new CacheManager(params.root ?? process.cwd());
-      try {
-        const result = await getSymbolBody(params.root, cache, {
-          path: params.path,
-          symbol: params.symbol,
-          maxLines: params.maxLines,
-        });
-        return {
-          content: [{ type: 'text', text: JSON.stringify(result) }],
-        };
-      } finally {
-        cache.close();
-      }
+      const cache = getPooledCache(params.root);
+      const result = await getSymbolBody(params.root, cache, {
+        path: params.path,
+        symbol: params.symbol,
+        maxLines: params.maxLines,
+      });
+      return {
+        content: [{ type: 'text', text: JSON.stringify(result) }],
+        structuredContent: result as unknown as Record<string, unknown>,
+      };
     },
   );
 
@@ -358,18 +353,15 @@ export function createServer(): McpServer {
       }),
     },
     async (params) => {
-      const cache = new CacheManager(params.root ?? process.cwd());
-      try {
-        const result = await getTypeDefinitions(params.root, cache, {
-          path: params.path,
-          limit: params.limit,
-        });
-        return {
-          content: [{ type: 'text', text: JSON.stringify(result) }],
-        };
-      } finally {
-        cache.close();
-      }
+      const cache = getPooledCache(params.root);
+      const result = await getTypeDefinitions(params.root, cache, {
+        path: params.path,
+        limit: params.limit,
+      });
+      return {
+        content: [{ type: 'text', text: JSON.stringify(result) }],
+        structuredContent: result as unknown as Record<string, unknown>,
+      };
     },
   );
 
@@ -385,19 +377,16 @@ export function createServer(): McpServer {
       }),
     },
     async (params) => {
-      const cache = new CacheManager(params.root ?? process.cwd());
-      try {
-        const result = await getSymbolReferences(params.root, cache, {
-          symbol: params.symbol,
-          path: params.path,
-          limit: params.limit,
-        });
-        return {
-          content: [{ type: 'text', text: JSON.stringify(result) }],
-        };
-      } finally {
-        cache.close();
-      }
+      const cache = getPooledCache(params.root);
+      const result = await getSymbolReferences(params.root, cache, {
+        symbol: params.symbol,
+        path: params.path,
+        limit: params.limit,
+      });
+      return {
+        content: [{ type: 'text', text: JSON.stringify(result) }],
+        structuredContent: result as unknown as Record<string, unknown>,
+      };
     },
   );
 
@@ -412,18 +401,15 @@ export function createServer(): McpServer {
       }),
     },
     async (params) => {
-      const cache = new CacheManager(params.root ?? process.cwd());
-      try {
-        const result = await getChangedSymbols(params.root, cache, {
-          stagedOnly: params.stagedOnly,
-          base: params.base,
-        });
-        return {
-          content: [{ type: 'text', text: JSON.stringify(result) }],
-        };
-      } finally {
-        cache.close();
-      }
+      const cache = getPooledCache(params.root);
+      const result = await getChangedSymbols(params.root, cache, {
+        stagedOnly: params.stagedOnly,
+        base: params.base,
+      });
+      return {
+        content: [{ type: 'text', text: JSON.stringify(result) }],
+        structuredContent: result as unknown as Record<string, unknown>,
+      };
     },
   );
 
@@ -438,18 +424,77 @@ export function createServer(): McpServer {
       }),
     },
     async (params) => {
-      const cache = new CacheManager(params.root ?? process.cwd());
-      try {
-        const result = await getFoldedFile(params.root, cache, {
-          path: params.path,
-          unfoldSymbols: params.unfoldSymbols,
-        });
-        return {
-          content: [{ type: 'text', text: JSON.stringify(result) }],
-        };
-      } finally {
-        cache.close();
-      }
+      const cache = getPooledCache(params.root);
+      const result = await getFoldedFile(params.root, cache, {
+        path: params.path,
+        unfoldSymbols: params.unfoldSymbols,
+      });
+      return {
+        content: [{ type: 'text', text: JSON.stringify(result) }],
+        structuredContent: result as unknown as Record<string, unknown>,
+      };
+    },
+  );
+
+  // ── 17. get_impact_analysis ────────────────────────────────────
+  server.registerTool(
+    'get_impact_analysis',
+    {
+      description: 'Analyze reverse dependency impact: find all files and test suites that depend on a given file or module directly or transitively. Computes blast radius score.',
+      inputSchema: rootSchema.extend({
+        path: z.string().describe('Target file or module path to analyze impact for'),
+        maxDepth: z.number().optional().default(5).describe('Maximum transitive dependency depth to explore'),
+      }),
+    },
+    async (params) => {
+      const cache = getPooledCache(params.root);
+      const result = await getImpactAnalysis(params.root, cache, {
+        path: params.path,
+        maxDepth: params.maxDepth,
+      });
+      return {
+        content: [{ type: 'text', text: JSON.stringify(result) }],
+        structuredContent: result as unknown as Record<string, unknown>,
+      };
+    },
+  );
+
+  // ── 18. get_diff_summary ───────────────────────────────────────
+  server.registerTool(
+    'get_diff_summary',
+    {
+      description: 'Get a semantic summary of changes between git commits/branches or working tree with impact analysis and test blast radius.',
+      inputSchema: rootSchema.extend({
+        base: z.string().optional().describe('Git base reference (e.g. "main" or "HEAD~1")'),
+        stagedOnly: z.boolean().optional().default(false).describe('Only inspect staged git changes'),
+      }),
+    },
+    async (params) => {
+      const cache = getPooledCache(params.root);
+      const result = await getDiffSummary(params.root, cache, {
+        base: params.base,
+        stagedOnly: params.stagedOnly,
+      });
+      return {
+        content: [{ type: 'text', text: JSON.stringify(result) }],
+        structuredContent: result as unknown as Record<string, unknown>,
+      };
+    },
+  );
+
+  // ── 19. get_workspaces ─────────────────────────────────────────
+  server.registerTool(
+    'get_workspaces',
+    {
+      description: 'Detect monorepo architecture and package topology (pnpm workspaces, npm/yarn workspaces, turbo, lerna, cargo, go.work).',
+      inputSchema: rootSchema,
+    },
+    async (params) => {
+      const result = await getWorkspaces(params.root);
+      return {
+        content: [{ type: 'text', text: JSON.stringify(result) }],
+        structuredContent: result as unknown as Record<string, unknown>,
+      };
     },
   );
 
@@ -457,8 +502,26 @@ export function createServer(): McpServer {
 }
 
 export async function startServer(): Promise<void> {
+  // Pre-initialize Tree-sitter manager in the background
+  try {
+    await treeSitterManager.init();
+  } catch {
+    // Non-fatal
+  }
+
   const server = createServer();
   const transport = new StdioServerTransport();
+
+  process.on('SIGINT', () => {
+    closeAllCaches();
+    process.exit(0);
+  });
+
+  process.on('SIGTERM', () => {
+    closeAllCaches();
+    process.exit(0);
+  });
+
   await server.connect(transport);
   console.error('TokenDiet MCP server running on stdio');
 }

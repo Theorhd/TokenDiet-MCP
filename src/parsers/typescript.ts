@@ -55,7 +55,7 @@ export class TypeScriptParser implements Parser {
 
       // Comments in the middle of a line — strip
       let codeLine = line;
-      // Remove inline comments (but not inside strings — simplified)
+      // Remove inline comments (but not inside strings)
       const commentIdx = codeLine.indexOf('//');
       if (commentIdx > 0 && !isInsideString(codeLine, commentIdx)) {
         codeLine = codeLine.substring(0, commentIdx);
@@ -69,15 +69,23 @@ export class TypeScriptParser implements Parser {
       );
       if (importMatch) {
         const from = importMatch[6] ?? '';
-        const names: string[] = [];
-        if (importMatch[1]) names.push(...importMatch[1].split(',').map(s => s.trim()).filter(Boolean));
-        if (importMatch[2]) names.push(importMatch[2]);
-        if (importMatch[3]) names.push(...importMatch[3].split(',').map(s => s.trim()).filter(Boolean));
-        if (importMatch[4]) names.push(importMatch[4].replace('* as ', '').trim());
+        const rawNames: string[] = [];
+        if (importMatch[1]) rawNames.push(...importMatch[1].split(',').map(s => s.trim()).filter(Boolean));
+        if (importMatch[2]) rawNames.push(importMatch[2]);
+        if (importMatch[3]) rawNames.push(...importMatch[3].split(',').map(s => s.trim()).filter(Boolean));
+        if (importMatch[4]) rawNames.push(importMatch[4].replace('* as ', '').trim());
+
+        const names = rawNames.map(n => {
+          const stripped = n.replace(/^type\s+/, '').trim();
+          if (stripped.includes(' as ')) {
+            return stripped.split(/\s+as\s+/)[0]?.trim() ?? stripped;
+          }
+          return stripped;
+        }).filter(Boolean);
 
         imports.push({
           from,
-          names: names.map(n => n.replace(/^type\s+/, '').trim()),
+          names,
           isExternal: !from.startsWith('.') && !from.startsWith('/'),
           isDefault: !!importMatch[2],
         });
@@ -96,14 +104,51 @@ export class TypeScriptParser implements Parser {
         });
       }
 
+      // CommonJS require: const { a, b } = require('./x') or const x = require('./x')
+      const requireMatch = cleanLine.match(/(?:const|let|var)\s+(?:\{([^}]+)\}|(\w+))\s*=\s*require\(['"]([^'"]+)['"]\)/);
+      if (requireMatch) {
+        const from = requireMatch[3] ?? '';
+        const names: string[] = [];
+        if (requireMatch[1]) {
+          names.push(...requireMatch[1].split(',').map(s => {
+            const part = s.trim();
+            if (part.includes(':')) return part.split(':')[0]?.trim() ?? part;
+            return part;
+          }).filter(Boolean));
+        } else if (requireMatch[2]) {
+          names.push(requireMatch[2]);
+        }
+        imports.push({
+          from,
+          names,
+          isExternal: !from.startsWith('.') && !from.startsWith('/'),
+          isDefault: !!requireMatch[2],
+        });
+      }
+
       // ── Exports ──
       const isExport = cleanLine.startsWith('export ');
+
+      // export * from '...' or export * as ns from '...'
+      const starExport = cleanLine.match(/^export\s+\*\s*(?:as\s+\w+\s+)?from\s+['"]([^'"]+)['"]/);
+      if (starExport) {
+        const from = starExport[1] ?? '';
+        imports.push({ from, names: [], isExternal: !from.startsWith('.'), isDefault: false });
+        pendingDoc = null;
+        continue;
+      }
 
       // export { x, y } from '...'
       const reExport = cleanLine.match(/^export\s+\{([^}]+)\}\s+from\s+['"]([^'"]+)['"]/);
       if (reExport) {
-        const names = reExport[1]?.split(',').map(s => s.trim()) ?? [];
+        const rawNames = reExport[1]?.split(',').map(s => s.trim()) ?? [];
         const from = reExport[2] ?? '';
+        const names = rawNames.map(n => {
+          if (n.includes(' as ')) {
+            return n.split(/\s+as\s+/)[0]?.trim() ?? n;
+          }
+          return n;
+        }).filter(Boolean);
         imports.push({ from, names, isExternal: !from.startsWith('.'), isDefault: false });
         for (const name of names) {
           exports.push({ name, kind: 'const', line: i + 1, signature: `re-export from ${from}`, doc: '', exported: true });
@@ -223,7 +268,7 @@ export class TypeScriptParser implements Parser {
         }
       }
 
-      // Class method (lines starting with access modifiers or method names inside class)
+      // Class method
       if (!sym && /^\s{2,}(?:public|private|protected|static|async|readonly)\s/.test(codeLine)) {
         const methodMatch = cleanLine.match(/(?:public|private|protected|static|async|readonly|\s)+(\w+)\s*\(([^)]*)\)(?:\s*:\s*(\S+))?/);
         if (methodMatch && methodMatch[1] && !['if', 'for', 'while', 'switch', 'return', 'throw', 'new'].includes(methodMatch[1])) {
@@ -282,6 +327,7 @@ export class TypeScriptParser implements Parser {
 
     return {
       language: 'typescript',
+      tier: 'regex',
       purpose,
       lines: lines.length,
       bytes: Buffer.byteLength(content),
