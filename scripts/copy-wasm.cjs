@@ -11,10 +11,23 @@ if (fs.existsSync(coreWasmSrc)) {
   console.log('✓ Copied tree-sitter.wasm');
 }
 
-// Copy language wasms
+// Copy only supported language WASMs (reduces bundle size by ~73%)
+const SUPPORTED_WASMS = new Set([
+  'tree-sitter-typescript.wasm',
+  'tree-sitter-tsx.wasm',
+  'tree-sitter-javascript.wasm',
+  'tree-sitter-python.wasm',
+  'tree-sitter-go.wasm',
+  'tree-sitter-rust.wasm',
+  'tree-sitter-java.wasm',
+  'tree-sitter-c_sharp.wasm',
+  'tree-sitter-ruby.wasm',
+  'tree-sitter-php.wasm',
+]);
+
 const wasmsSrcDir = path.resolve(__dirname, '..', 'node_modules', 'tree-sitter-wasms', 'out');
 if (fs.existsSync(wasmsSrcDir)) {
-  const files = fs.readdirSync(wasmsSrcDir).filter(f => f.endsWith('.wasm'));
+  const files = fs.readdirSync(wasmsSrcDir).filter(f => SUPPORTED_WASMS.has(f));
   for (const file of files) {
     fs.copyFileSync(path.join(wasmsSrcDir, file), path.join(distWasmsDir, file));
   }
