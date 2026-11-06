@@ -1,6 +1,7 @@
 import { resolveRoot, displayPath, resolveSecurePath } from '../core/paths.js';
 import { readFileSafe } from '../core/utils.js';
 import { parseFile } from '../parsers/index.js';
+import { treeSitterManager } from '../parsers/treesitter.js';
 import { detectLanguage } from '../core/walker.js';
 import type { FoldedFileOutput } from '../types/index.js';
 import type { CacheManager } from '../core/cache.js';
@@ -24,6 +25,12 @@ export async function getFoldedFile(
     throw new Error(`File not found: ${filePath}`);
   }
 
+  try {
+    await treeSitterManager.init();
+  } catch {
+    // Fallback to regex
+  }
+
   const lines = content.split('\n');
   const totalLines = lines.length;
   const parsed = parseFile(filePath, content);
@@ -41,7 +48,9 @@ export async function getFoldedFile(
     const startLineIdx = sym.line - 1;
     let endLineIdx = startLineIdx;
 
-    if (isPython) {
+    if (sym.endLine && sym.endLine > sym.line) {
+      endLineIdx = Math.min(lines.length - 1, sym.endLine - 1);
+    } else if (isPython) {
       const startIndent = lines[startLineIdx]?.search(/\S/) ?? 0;
       for (let i = startLineIdx + 1; i < lines.length; i++) {
         const line = lines[i] ?? '';

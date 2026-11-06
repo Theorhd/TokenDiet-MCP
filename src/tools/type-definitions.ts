@@ -1,8 +1,8 @@
-import { resolve } from 'node:path';
-import { resolveRoot, displayPath } from '../core/paths.js';
+import { resolveRoot, displayPath, resolveSecurePath, toPosix } from '../core/paths.js';
 import { walk } from '../core/walker.js';
 import { readFileSafe } from '../core/utils.js';
 import { parseFile } from '../parsers/index.js';
+import { treeSitterManager } from '../parsers/treesitter.js';
 import type { TypeDefinitionsOutput, TypeDefItem, SymbolKind } from '../types/index.js';
 import type { CacheManager } from '../core/cache.js';
 
@@ -19,7 +19,12 @@ export async function getTypeDefinitions(
   options: TypeDefinitionsOptions = {},
 ): Promise<TypeDefinitionsOutput> {
   const projectRoot = resolveRoot(root);
-  const { path: targetPath, limit = 50 } = options;
+  const { path: rawTargetPath, limit = 50 } = options;
+  let targetPath: string | undefined;
+  if (rawTargetPath) {
+    const resolved = resolveSecurePath(projectRoot, rawTargetPath);
+    targetPath = toPosix(displayPath(projectRoot, resolved)).replace(/\/$/, '');
+  }
 
   const results: TypeDefItem[] = [];
 
@@ -29,7 +34,8 @@ export async function getTypeDefinitions(
     for (const kind of TYPE_KINDS) {
       const symbols = cache.searchSymbols('', kind, limit * 5);
       for (const sym of symbols) {
-        if (targetPath && !sym.file.startsWith(targetPath.replace(/\/$/, '')) && sym.file !== targetPath) {
+        const symFile = toPosix(sym.file);
+        if (targetPath && !symFile.startsWith(targetPath + '/') && symFile !== targetPath) {
           continue;
         }
         results.push({
@@ -38,19 +44,25 @@ export async function getTypeDefinitions(
           file: sym.file,
           line: sym.line,
           signature: sym.signature,
-          doc: '',
+          doc: sym.doc,
         });
       }
     }
   } else {
+    try {
+      await treeSitterManager.init();
+    } catch {
+      // Fallback to regex
+    }
     // Fallback scan
     const walkResult = walk(projectRoot, { maxDepth: 8, includeTests: false });
     const sourceFiles = walkResult.entries.filter(e =>
-      !e.isDir && ['ts', 'tsx', 'js', 'jsx', 'py', 'go', 'rs', 'java'].includes(e.lang),
+      !e.isDir && ['ts', 'tsx', 'js', 'jsx', 'py', 'go', 'rs', 'java', 'cs', 'rb', 'php'].includes(e.lang),
     );
 
     for (const file of sourceFiles) {
-      if (targetPath && !file.relative.startsWith(targetPath.replace(/\/$/, '')) && file.relative !== targetPath) {
+      const rel = toPosix(file.relative);
+      if (targetPath && !rel.startsWith(targetPath + '/') && rel !== targetPath) {
         continue;
       }
 

@@ -1,7 +1,8 @@
-import { resolveRoot, displayPath, toPosix } from '../core/paths.js';
+import { resolveRoot, toPosix } from '../core/paths.js';
 import { walk } from '../core/walker.js';
 import { parseFile } from '../parsers/index.js';
-import { readFileSafe } from '../core/utils.js';
+import { treeSitterManager } from '../parsers/treesitter.js';
+import { readFileSafe, resolveImportTarget } from '../core/utils.js';
 import { getEntryPoints } from './entry-points.js';
 import type { DeadCodeOutput, DeadCodeItem, SymbolKind } from '../types/index.js';
 import type { CacheManager } from '../core/cache.js';
@@ -41,7 +42,11 @@ export async function findDeadCode(
   const entryPoints = await getEntryPoints(root, cache);
   const entryPointPaths = new Set<string>();
   for (const ep of entryPoints.entryPoints) {
-    entryPointPaths.add(toPosix(ep.path).replace(/\/$/, ''));
+    const cleanEp = toPosix(ep.path).replace(/^\.\//, '').replace(/\/$/, '');
+    entryPointPaths.add(cleanEp);
+    if (cleanEp.startsWith('dist/') && cleanEp.endsWith('.js')) {
+      entryPointPaths.add('src/' + cleanEp.slice('dist/'.length, -3) + '.ts');
+    }
   }
 
   // ── 2. Gather data (cache-first, walk as fallback) ────────────
@@ -80,6 +85,11 @@ export async function findDeadCode(
 
     rawImports = cache.getImportGraph('').filter(imp => !imp.isExternal);
   } else {
+    try {
+      await treeSitterManager.init();
+    } catch {
+      // Fallback to regex
+    }
     const result = walk(projectRoot, { maxDepth: 8, includeTests: true });
     const sourceFiles = result.entries.filter(
       e => !e.isDir && ['ts', 'tsx', 'js', 'jsx', 'py', 'go', 'rs', 'java', 'rb', 'cs', 'php'].includes(e.lang),
@@ -294,74 +304,6 @@ export async function findDeadCode(
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────
-
-function resolveImportTarget(
-  fromFile: string,
-  importSpec: string,
-  knownFiles: Set<string>,
-): string | null {
-  const normFromFile = toPosix(fromFile);
-  const lastSlash = normFromFile.lastIndexOf('/');
-  const fromDir = lastSlash >= 0 ? normFromFile.substring(0, lastSlash) : '';
-
-  let resolved: string;
-  if (importSpec.startsWith('.')) {
-    resolved = fromDir ? `${fromDir}/${importSpec}` : importSpec;
-  } else if (importSpec.startsWith('/')) {
-    resolved = importSpec.slice(1);
-  } else if (importSpec.startsWith('@/') || importSpec.startsWith('~/')) {
-    resolved = importSpec.slice(2);
-    if (!knownFiles.has(resolved) && knownFiles.has(`src/${resolved}`)) {
-      resolved = `src/${resolved}`;
-    }
-  } else {
-    resolved = importSpec;
-    if (!knownFiles.has(resolved) && knownFiles.has(`src/${resolved}`)) {
-      resolved = `src/${resolved}`;
-    }
-  }
-
-  const parts = resolved.split('/');
-  const normalized: string[] = [];
-  for (const part of parts) {
-    if (part === '..') {
-      normalized.pop();
-    } else if (part !== '.' && part !== '') {
-      normalized.push(part);
-    }
-  }
-  resolved = normalized.join('/');
-
-  if (knownFiles.has(resolved)) return resolved;
-
-  const extMatch = resolved.match(/\.(js|jsx|mjs|cjs)$/);
-  if (extMatch) {
-    const base = resolved.slice(0, -extMatch[0].length);
-    const altExtensions = ['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs', '.mts', '.cts'];
-    for (const ext of altExtensions) {
-      const candidate = base + ext;
-      if (candidate !== resolved && knownFiles.has(candidate)) return candidate;
-    }
-    for (const idx of ['/index.ts', '/index.js', '/index.tsx']) {
-      const candidate = base + idx;
-      if (knownFiles.has(candidate)) return candidate;
-    }
-  }
-
-  const extensions = [
-    '.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs', '.mts', '.cts',
-    '.py', '.go', '.rs', '.java', '.rb', '.cs', '.php',
-    '/index.ts', '/index.js', '/index.tsx', '/index.py', '/index.go', '/index.rs',
-    '/__init__.py',
-  ];
-
-  for (const ext of extensions) {
-    const candidate = resolved + ext;
-    if (knownFiles.has(candidate)) return candidate;
-  }
-
-  return null;
-}
 
 function isTestFile(filePath: string): boolean {
   const norm = toPosix(filePath);

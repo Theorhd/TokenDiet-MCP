@@ -38,9 +38,13 @@ export async function refreshIndex(
       // Fallback
     }
     const floorMtime = Math.floor(mtimeMs);
+    const treeSitterActive =
+      process.env.TOKENDIET_DISABLE_TREE_SITTER !== '1' &&
+      process.env.TOKENDIET_DISABLE_TREE_SITTER !== 'true' &&
+      ['ts', 'tsx', 'js', 'jsx', 'py', 'go', 'rs', 'java', 'cs', 'rb', 'php'].includes(entry.lang);
 
-    // Incremental indexing: skip reading and parsing if file is unmodified
-    if (cache.isFileUnchanged(entry.relative, floorMtime, entry.size)) {
+    // Incremental indexing: skip reading and parsing if file is unmodified (and already at full precision when supported)
+    if (cache.isFileUnchanged(entry.relative, floorMtime, entry.size, treeSitterActive)) {
       continue;
     }
 

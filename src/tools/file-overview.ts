@@ -1,5 +1,5 @@
 import { statSync } from 'node:fs';
-import { parseFile } from '../parsers/index.js';
+import { parseFile, treeSitterManager } from '../parsers/index.js';
 import { resolveRoot, displayPath, resolveSecurePath } from '../core/paths.js';
 import { readFileSafe } from '../core/utils.js';
 import type { FileOverview, SymbolInfo, ExportInfo } from '../types/index.js';
@@ -28,10 +28,19 @@ export async function getFileOverview(
     throw new Error(`File not found: ${filePath}`);
   }
 
-  const cachedMtime = cache.getFileMtime(displayPath(projectRoot, filePath));
+  const relPath = displayPath(projectRoot, filePath);
+  const cachedMtime = cache.getFileMtime(relPath);
   if (cachedMtime === Math.floor(stats.mtimeMs)) {
-    const cached = cache.getFileOverview(displayPath(projectRoot, filePath));
-    if (cached) {
+    const cached = cache.getFileOverview(relPath);
+    const treeSitterDisabled =
+      process.env.TOKENDIET_DISABLE_TREE_SITTER === '1' ||
+      process.env.TOKENDIET_DISABLE_TREE_SITTER === 'true';
+    const canUpgradeToFull =
+      !treeSitterDisabled &&
+      cached?.precision === 'approx' &&
+      ['ts', 'tsx', 'js', 'jsx', 'py', 'go', 'rs', 'java', 'cs', 'rb', 'php'].includes(cached.lang);
+
+    if (cached && !canUpgradeToFull) {
       let symbols: SymbolInfo[] = cached.symbols;
       if (detail === 'names') {
         symbols = symbols.map(s => ({ ...s, signature: '', doc: '' }));
@@ -48,7 +57,7 @@ export async function getFileOverview(
       }
 
       return {
-        file: displayPath(projectRoot, filePath),
+        file: relPath,
         language: cached.lang,
         purpose: cached.purpose,
         lines: cached.lines,
@@ -68,8 +77,13 @@ export async function getFileOverview(
     throw new Error(`Cannot read file: ${filePath}`);
   }
 
+  try {
+    await treeSitterManager.init();
+  } catch {
+    // Fallback to regex if WASM init fails
+  }
+
   const parsed = parseFile(filePath, content);
-  const relPath = displayPath(projectRoot, filePath);
 
   // Apply detail level
   let symbols: SymbolInfo[] = parsed.symbols;

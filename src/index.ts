@@ -37,7 +37,7 @@ async function main(): Promise<void> {
 
   for (const arg of args) {
     if (arg === '--version' || arg === '-v') {
-      process.stdout.write('tokendiet v0.4.0\n');
+      process.stdout.write('tokendiet v0.5.0\n');
       process.exit(0);
     }
     if (arg === '--help' || arg === '-h') {

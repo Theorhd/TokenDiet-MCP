@@ -1,8 +1,8 @@
-import { resolve, basename } from 'node:path';
+import { resolve } from 'node:path';
 import { resolveRoot, displayPath, toPosix } from '../core/paths.js';
 import { walk } from '../core/walker.js';
-import { parseFile } from '../parsers/index.js';
-import { readFileSafe, extractPackageName, resolveImportPath } from '../core/utils.js';
+import { parseFile, treeSitterManager } from '../parsers/index.js';
+import { readFileSafe, extractPackageName, resolveImportPath, resolveImportTarget } from '../core/utils.js';
 import type { ModuleGraph, GraphNode, GraphEdge } from '../types/index.js';
 import type { CacheManager } from '../core/cache.js';
 
@@ -46,7 +46,7 @@ export async function getModuleGraph(
       allNodes.push({
         id: posixPath,
         lang: f.lang,
-        exportCount: filesWithSymbols.get(f.path)?.lines ?? 0,
+        exportCount: filesWithSymbols.get(f.path)?.exportCount ?? 0,
         size: f.bytes,
       });
     }
@@ -71,6 +71,11 @@ export async function getModuleGraph(
     }
   } else {
     // ── 2. Fallback: walk and parse ──
+    try {
+      await treeSitterManager.init();
+    } catch {
+      // Non-fatal
+    }
     const result = walk(projectRoot, { maxDepth: 8, includeTests: true });
     const sourceFiles = result.entries.filter(e => !e.isDir && ['ts', 'tsx', 'js', 'jsx', 'py', 'go', 'rs', 'java', 'cs', 'rb', 'php'].includes(e.lang));
     const knownFilesSet = new Set(sourceFiles.map(f => toPosix(f.relative)));
@@ -95,16 +100,26 @@ export async function getModuleGraph(
           continue;
         }
 
-        const candidates = resolveImportPath(file.path, imp.from);
-        for (const candidate of candidates) {
-          const candidateRel = toPosix(displayPath(projectRoot, candidate));
-          if (knownFilesSet.has(candidateRel)) {
-            allEdges.push({
-              from: relPath,
-              to: candidateRel,
-              kind: 'import',
-              via: imp.names,
-            });
+        const resolvedTarget = resolveImportTarget(relPath, imp.from, knownFilesSet);
+        if (resolvedTarget) {
+          allEdges.push({
+            from: relPath,
+            to: resolvedTarget,
+            kind: 'import',
+            via: imp.names,
+          });
+        } else {
+          const candidates = resolveImportPath(file.path, imp.from);
+          for (const candidate of candidates) {
+            const candidateRel = toPosix(displayPath(projectRoot, candidate));
+            if (knownFilesSet.has(candidateRel)) {
+              allEdges.push({
+                from: relPath,
+                to: candidateRel,
+                kind: 'import',
+                via: imp.names,
+              });
+            }
           }
         }
       }
@@ -188,6 +203,10 @@ export async function getModuleGraph(
   if (aggregate && !module) {
     const aggNodes = aggregateNodes(filteredNodes);
     const aggEdges = aggregateEdges(filteredEdges);
+    const aggHubs = Array.from(new Set(hubs.map(h => aggregateNodeId(h)))).slice(0, 10);
+    const aggCycles = cycles
+      .map(c => Array.from(new Set(c.map(aggregateNodeId))))
+      .filter(c => c.length > 1);
     return {
       scope: `dir:${toPosix(projectRoot).split('/').pop()}`,
       nodes: aggNodes,
@@ -197,8 +216,8 @@ export async function getModuleGraph(
           .sort(([, a], [, b]) => b - a)
           .slice(0, 20),
       ),
-      hubs: hubs.map(h => aggregateNodeId(h)).slice(0, 10),
-      cycles: cycles.map(c => c.map(aggregateNodeId)),
+      hubs: aggHubs,
+      cycles: aggCycles,
       _truncated: aggEdges.length > maxEdges ? `${maxEdges} edges max reached` : undefined,
     };
   }
@@ -216,63 +235,6 @@ export async function getModuleGraph(
     cycles,
     _truncated: filteredEdges.length > maxEdges ? `${maxEdges} edges max reached` : undefined,
   };
-}
-
-/** Resolve relative or alias import spec to known file path */
-function resolveImportTarget(
-  fromFile: string,
-  importSpec: string,
-  knownFiles: Set<string>,
-): string | null {
-  const normFromFile = toPosix(fromFile);
-  const lastSlash = normFromFile.lastIndexOf('/');
-  const fromDir = lastSlash >= 0 ? normFromFile.substring(0, lastSlash) : '';
-
-  let resolved: string;
-  if (importSpec.startsWith('.')) {
-    resolved = fromDir ? `${fromDir}/${importSpec}` : importSpec;
-  } else if (importSpec.startsWith('/')) {
-    resolved = importSpec.slice(1);
-  } else {
-    resolved = importSpec;
-  }
-
-  const parts = resolved.split('/');
-  const normalized: string[] = [];
-  for (const part of parts) {
-    if (part === '..') normalized.pop();
-    else if (part !== '.' && part !== '') normalized.push(part);
-  }
-  resolved = normalized.join('/');
-
-  if (knownFiles.has(resolved)) return resolved;
-
-  const extMatch = resolved.match(/\.(js|jsx|mjs|cjs)$/);
-  if (extMatch) {
-    const base = resolved.slice(0, -extMatch[0].length);
-    const altExtensions = ['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs', '.mts', '.cts'];
-    for (const ext of altExtensions) {
-      const candidate = base + ext;
-      if (candidate !== resolved && knownFiles.has(candidate)) return candidate;
-    }
-    for (const idx of ['/index.ts', '/index.js', '/index.tsx']) {
-      const candidate = base + idx;
-      if (knownFiles.has(candidate)) return candidate;
-    }
-  }
-
-  const extensions = [
-    '.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs', '.mts', '.cts',
-    '.py', '.go', '.rs', '.java', '.rb', '.cs', '.php',
-    '/index.ts', '/index.js', '/index.tsx', '/index.py', '/index.go', '/index.rs',
-  ];
-
-  for (const ext of extensions) {
-    const candidate = resolved + ext;
-    if (knownFiles.has(candidate)) return candidate;
-  }
-
-  return null;
 }
 
 /** Aggregate node IDs intelligently at subfolder level (e.g. src/core/* instead of src/*) */
@@ -299,18 +261,29 @@ function aggregateNodes(nodes: GraphNode[]): GraphNode[] {
 }
 
 function aggregateEdges(edges: GraphEdge[]): GraphEdge[] {
-  const seen = new Set<string>();
-  const result: GraphEdge[] = [];
+  const edgeMap = new Map<string, GraphEdge>();
   for (const edge of edges) {
     const from = aggregateNodeId(edge.from);
     const to = aggregateNodeId(edge.to);
     if (from === to) continue;
     const key = `${from}->${to}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    result.push({ from, to, kind: edge.kind, via: [] });
+    const existing = edgeMap.get(key);
+    if (existing) {
+      for (const v of edge.via) {
+        if (existing.via.length < 10 && !existing.via.includes(v)) {
+          existing.via.push(v);
+        }
+      }
+    } else {
+      edgeMap.set(key, {
+        from,
+        to,
+        kind: edge.kind,
+        via: edge.via.slice(0, 10),
+      });
+    }
   }
-  return result;
+  return Array.from(edgeMap.values());
 }
 
 /** Tarjan's Strongly Connected Components algorithm for O(V + E) cycle detection */

@@ -15,11 +15,20 @@ export class TypeScriptParser implements Parser {
 
     // State machine
     let inMultilineComment = false;
+    let inTemplateLiteral = false;
     let pendingDoc: string | null = null;
 
     for (let i = 0; i < lines.length; i++) {
       let line = lines[i] ?? '';
       const trimmed = line.trim();
+
+      // Handle multiline template literals
+      if (inTemplateLiteral) {
+        if (countUnescapedBackticks(line) % 2 === 1) {
+          inTemplateLiteral = false;
+        }
+        continue;
+      }
 
       // Skip empty lines
       if (!trimmed) {
@@ -51,7 +60,10 @@ export class TypeScriptParser implements Parser {
       }
 
       if (trimmed.startsWith('//')) continue;
-      if (trimmed.startsWith('/*')) { inMultilineComment = true; continue; }
+      if (trimmed.startsWith('/*')) {
+        if (!trimmed.includes('*/')) inMultilineComment = true;
+        continue;
+      }
 
       // Comments in the middle of a line — strip
       let codeLine = line;
@@ -59,6 +71,10 @@ export class TypeScriptParser implements Parser {
       const commentIdx = codeLine.indexOf('//');
       if (commentIdx > 0 && !isInsideString(codeLine, commentIdx)) {
         codeLine = codeLine.substring(0, commentIdx);
+      }
+
+      if (countUnescapedBackticks(codeLine) % 2 === 1) {
+        inTemplateLiteral = true;
       }
 
       const cleanLine = codeLine.trim();
@@ -172,25 +188,42 @@ export class TypeScriptParser implements Parser {
       // ── Symbol extraction ──
       let sym: SymbolInfo | null = null;
 
-      // Function declaration
-      const funcMatch = cleanLine.match(/(?:export\s+)?(?:async\s+)?function\s+(\w+)\s*(?:<[^>]+>)?\s*\(([^)]*)\)(?:\s*:\s*(\S+(?:\s*\|?\s*\S+)*))?/);
+      // Function declaration (supports single-line and multiline parameter lists)
+      const funcMatch = cleanLine.match(
+        /^(?:export\s+)?(?:async\s+)?function\s+(\w+)\s*(?:<[^>]+>)?\s*\(([^)]*)(?:\)(?:\s*:\s*(\S+(?:\s*\|?\s*\S+)*))?)?/,
+      );
       if (funcMatch) {
         const name = funcMatch[1] ?? '';
-        const params = (funcMatch[2] ?? '').slice(0, 60);
-        const retType = funcMatch[3] ?? 'void';
+        let params = (funcMatch[2] ?? '').trim();
+        let retType = funcMatch[3] ?? 'void';
+        if (!cleanLine.includes(')')) {
+          const nextSlice = lines
+            .slice(i, Math.min(i + 6, lines.length))
+            .map(l => l.trim())
+            .join(' ');
+          const multiMatch = nextSlice.match(
+            /^(?:export\s+)?(?:async\s+)?function\s+\w+\s*(?:<[^>]+>)?\s*\(([^)]*)\)(?:\s*:\s*([^{]+))?/,
+          );
+          if (multiMatch) {
+            params = (multiMatch[1] ?? '').trim();
+            retType = (multiMatch[2] ?? 'void').trim();
+          }
+        }
         sym = {
           name,
           kind: 'function',
           line: i + 1,
-          signature: `${name}(${params}) => ${retType}`.slice(0, 90),
+          signature: `${name}(${params.slice(0, 60)}) => ${retType}`.slice(0, 90),
           doc: pendingDoc ?? '',
           exported: isExport,
         };
       }
 
-      // Arrow function / const function
+      // Arrow function / const function / exported const
       if (!sym) {
-        const arrowMatch = cleanLine.match(/(?:export\s+)?const\s+(\w+)\s*(?:=\s*(?:async\s+)?\(([^)]*)\)(?:\s*:\s*(\S+(?:\s*\|?\s*\S+)*))?\s*=>|:\s*(?:React\.)?FC|:\s*\(([^)]*)\)\s*=>\s*\S+)/);
+        const arrowMatch = cleanLine.match(
+          /^(?:export\s+)?const\s+(\w+)\s*(?:=\s*(?:async\s+)?\(([^)]*)\)(?:\s*:\s*(\S+(?:\s*\|?\s*\S+)*))?\s*=>|:\s*(?:React\.)?FC|:\s*\(([^)]*)\)\s*=>\s*\S+)/,
+        );
         if (arrowMatch) {
           const name = arrowMatch[1] ?? '';
           const isReactComponent = cleanLine.includes(': FC') || cleanLine.includes(': React.FC') || cleanLine.includes(': FunctionComponent');
@@ -202,12 +235,24 @@ export class TypeScriptParser implements Parser {
             doc: pendingDoc ?? '',
             exported: isExport,
           };
+        } else if (isExport) {
+          const constMatch = cleanLine.match(/^export\s+const\s+(\w+)\s*(?::\s*[^=]+)?\s*=/);
+          if (constMatch && constMatch[1]) {
+            sym = {
+              name: constMatch[1],
+              kind: 'const',
+              line: i + 1,
+              signature: cleanLine.replace(/\{.*$/, '').trim().slice(0, 90),
+              doc: pendingDoc ?? '',
+              exported: true,
+            };
+          }
         }
       }
 
       // Class declaration
       if (!sym) {
-        const classMatch = cleanLine.match(/(?:export\s+)?(?:abstract\s+)?class\s+(\w+)(?:\s+extends\s+(\w+(?:\s*,\s*\w+)*))?(?:\s+implements\s+([^{]+))?/);
+        const classMatch = cleanLine.match(/^(?:export\s+)?(?:abstract\s+)?class\s+(\w+)(?:\s+extends\s+(\w+(?:\s*,\s*\w+)*))?(?:\s+implements\s+([^{]+))?/);
         if (classMatch) {
           const name = classMatch[1] ?? '';
           const extendsCls = classMatch[2] ? ` extends ${classMatch[2]}` : '';
@@ -225,13 +270,13 @@ export class TypeScriptParser implements Parser {
 
       // Interface declaration
       if (!sym) {
-        const ifaceMatch = cleanLine.match(/(?:export\s+)?interface\s+(\w+)(?:\s+extends\s+([^{]+))?/);
+        const ifaceMatch = cleanLine.match(/^(?:export\s+)?interface\s+(\w+)(?:\s+extends\s+([^{]+))?/);
         if (ifaceMatch) {
           sym = {
             name: ifaceMatch[1] ?? '',
             kind: 'interface',
             line: i + 1,
-            signature: `interface ${ifaceMatch[1]}${ifaceMatch[2] ? ` extends ${ifaceMatch[2]}` : ''}`.slice(0, 90),
+            signature: `interface ${ifaceMatch[1]}${ifaceMatch[2] ? ` extends ${ifaceMatch[2].trim()}` : ''}`.slice(0, 90),
             doc: pendingDoc ?? '',
             exported: isExport,
           };
@@ -240,7 +285,7 @@ export class TypeScriptParser implements Parser {
 
       // Type alias
       if (!sym) {
-        const typeMatch = cleanLine.match(/(?:export\s+)?type\s+(\w+)(?:\s*<[^>]+>)?\s*=\s*(.+)/);
+        const typeMatch = cleanLine.match(/^(?:export\s+)?type\s+(\w+)(?:\s*<[^>]+>)?\s*=\s*(.+)/);
         if (typeMatch) {
           sym = {
             name: typeMatch[1] ?? '',
@@ -255,7 +300,7 @@ export class TypeScriptParser implements Parser {
 
       // Enum
       if (!sym) {
-        const enumMatch = cleanLine.match(/(?:export\s+)?enum\s+(\w+)/);
+        const enumMatch = cleanLine.match(/^(?:export\s+)?enum\s+(\w+)/);
         if (enumMatch) {
           sym = {
             name: enumMatch[1] ?? '',
@@ -270,8 +315,8 @@ export class TypeScriptParser implements Parser {
 
       // Class method
       if (!sym && /^\s{2,}(?:public|private|protected|static|async|readonly)\s/.test(codeLine)) {
-        const methodMatch = cleanLine.match(/(?:public|private|protected|static|async|readonly|\s)+(\w+)\s*\(([^)]*)\)(?:\s*:\s*(\S+))?/);
-        if (methodMatch && methodMatch[1] && !['if', 'for', 'while', 'switch', 'return', 'throw', 'new'].includes(methodMatch[1])) {
+        const methodMatch = cleanLine.match(/^(?:public|private|protected|static|async|readonly|\s)+(\w+)\s*\(([^)]*)\)(?:\s*:\s*(\S+))?/);
+        if (methodMatch && methodMatch[1] && !['if', 'for', 'while', 'switch', 'return', 'throw', 'new', 'const', 'let', 'var'].includes(methodMatch[1])) {
           sym = {
             name: methodMatch[1],
             kind: 'method',
@@ -302,14 +347,20 @@ export class TypeScriptParser implements Parser {
       return true;
     });
 
-    // Deduplicate imports
-    const seenImports = new Set<string>();
-    const uniqueImports = imports.filter(imp => {
-      const key = imp.from;
-      if (seenImports.has(key)) return false;
-      seenImports.add(key);
-      return true;
-    });
+    // Deduplicate imports by merging names per module
+    const seenImports = new Map<string, ImportInfo>();
+    for (const imp of imports) {
+      const existing = seenImports.get(imp.from);
+      if (existing) {
+        for (const n of imp.names) {
+          if (!existing.names.includes(n)) existing.names.push(n);
+        }
+        if (imp.isDefault) existing.isDefault = true;
+      } else {
+        seenImports.set(imp.from, { ...imp, names: [...imp.names] });
+      }
+    }
+    const uniqueImports = Array.from(seenImports.values());
 
     // Heuristic purpose detection
     let purpose = '';
@@ -354,4 +405,21 @@ function isInsideString(line: string, idx: number): boolean {
   }
 
   return inSingle || inDouble || inBacktick;
+}
+
+function countUnescapedBackticks(line: string): number {
+  let count = 0;
+  let inSingle = false;
+  let inDouble = false;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (ch === '\\') {
+      i++;
+      continue;
+    }
+    if (ch === "'" && !inDouble) inSingle = !inSingle;
+    else if (ch === '"' && !inSingle) inDouble = !inDouble;
+    else if (ch === '`' && !inSingle && !inDouble) count++;
+  }
+  return count;
 }

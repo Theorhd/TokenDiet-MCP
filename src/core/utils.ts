@@ -1,5 +1,6 @@
 import { readFileSync, existsSync, statSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, dirname } from 'node:path';
+import { toPosix } from './paths.js';
 
 /** Max file size (10 MB) to prevent OOM/DoS attacks */
 export const MAX_SAFE_FILE_SIZE_BYTES = 10 * 1024 * 1024;
@@ -98,12 +99,18 @@ export function resolveImportPath(
   // Skip external imports
   if (!importSpec.startsWith('.') && !importSpec.startsWith('/')) return [];
 
-  const fromDir = fromFile.substring(0, fromFile.lastIndexOf('/'));
+  const fromDir = dirname(fromFile);
   const resolved = join(fromDir, importSpec);
 
   const candidates: string[] = [];
   if (existsSync(resolved)) {
-    candidates.push(resolved);
+    try {
+      if (!statSync(resolved).isDirectory()) {
+        candidates.push(resolved);
+      }
+    } catch {
+      candidates.push(resolved);
+    }
   }
 
   // If import ends with .js, .jsx, .mjs, .cjs, probe corresponding .ts/.tsx/.mts/.cts files
@@ -128,7 +135,7 @@ export function resolveImportPath(
   // Common extensions to probe if extension omitted or for directory imports
   const extensions = [
     '.ts', '.tsx', '.mts', '.cts', '.js', '.jsx', '.mjs', '.cjs',
-    '.py', '.go', '.rs', '.java', '.rb',
+    '.py', '.go', '.rs', '.java', '.rb', '.cs', '.php',
     '/index.ts', '/index.tsx', '/index.mts', '/index.js', '/index.jsx',
     '/index.py', '/index.go', '/index.rs',
     '/__init__.py',
@@ -141,6 +148,87 @@ export function resolveImportPath(
     }
   }
   return Array.from(new Set(candidates));
+}
+
+/** Resolve a relative or path-aliased import specifier against a set of known POSIX relative file paths */
+export function resolveImportTarget(
+  fromFile: string,
+  importSpec: string,
+  knownFiles: Set<string>,
+): string | null {
+  const normFromFile = toPosix(fromFile);
+  const lastSlash = normFromFile.lastIndexOf('/');
+  const fromDir = lastSlash >= 0 ? normFromFile.substring(0, lastSlash) : '';
+
+  let resolved: string;
+  if (importSpec.startsWith('.')) {
+    resolved = fromDir ? `${fromDir}/${importSpec}` : importSpec;
+  } else if (importSpec.startsWith('/')) {
+    resolved = importSpec.slice(1);
+  } else if (importSpec.startsWith('@/') || importSpec.startsWith('~/')) {
+    resolved = importSpec.slice(2);
+    if (!knownFiles.has(resolved) && knownFiles.has(`src/${resolved}`)) {
+      resolved = `src/${resolved}`;
+    }
+  } else {
+    resolved = importSpec;
+    if (!knownFiles.has(resolved) && knownFiles.has(`src/${resolved}`)) {
+      resolved = `src/${resolved}`;
+    }
+  }
+
+  const parts = resolved.split('/');
+  const normalized: string[] = [];
+  for (const part of parts) {
+    if (part === '..') {
+      normalized.pop();
+    } else if (part !== '.' && part !== '') {
+      normalized.push(part);
+    }
+  }
+  resolved = normalized.join('/');
+
+  if (knownFiles.has(resolved)) return resolved;
+
+  // Handle TypeScript ESM imports (.js -> .ts, .mjs -> .mts, .cjs -> .cts, .jsx -> .tsx)
+  const extMatch = resolved.match(/\.(js|jsx|mjs|cjs)$/);
+  if (extMatch) {
+    const base = resolved.slice(0, -extMatch[0].length);
+    const altExtensions = ['.ts', '.tsx', '.mts', '.cts', '.js', '.jsx', '.mjs', '.cjs'];
+    for (const ext of altExtensions) {
+      const candidate = base + ext;
+      if (candidate !== resolved && knownFiles.has(candidate)) return candidate;
+    }
+    for (const idx of ['/index.ts', '/index.tsx', '/index.mts', '/index.js']) {
+      const candidate = base + idx;
+      if (knownFiles.has(candidate)) return candidate;
+    }
+  }
+
+  const extensions = [
+    '.ts', '.tsx', '.mts', '.cts', '.js', '.jsx', '.mjs', '.cjs',
+    '.py', '.go', '.rs', '.java', '.rb', '.cs', '.php',
+    '/index.ts', '/index.tsx', '/index.mts', '/index.js', '/index.jsx',
+    '/index.py', '/index.go', '/index.rs',
+    '/__init__.py', '/mod.rs',
+  ];
+
+  for (const ext of extensions) {
+    const candidate = resolved + ext;
+    if (knownFiles.has(candidate)) return candidate;
+  }
+
+  // Try src/ prefix fallback for alias-resolved candidates without extension
+  if (importSpec.startsWith('@/') || importSpec.startsWith('~/')) {
+    const srcResolved = `src/${resolved}`;
+    if (knownFiles.has(srcResolved)) return srcResolved;
+    for (const ext of extensions) {
+      const candidate = srcResolved + ext;
+      if (knownFiles.has(candidate)) return candidate;
+    }
+  }
+
+  return null;
 }
 
 /** Extract the module/package name from an import path */

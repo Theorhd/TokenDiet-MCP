@@ -21,6 +21,7 @@ describe('WorkerPool Parallel Parsing', () => {
 
     const results = await workerPool.parseBatch(tasks, 10);
     expect(results.length).toBe(2);
+    expect(results[0]?.parsed.precision).toBe('full');
     expect(results[0]?.parsed.symbols.some(s => s.name === 'add')).toBe(true);
     expect(results[1]?.parsed.symbols.some(s => s.name === 'PI' || s.name === 'square')).toBe(true);
   });
@@ -30,12 +31,14 @@ describe('WorkerPool Parallel Parsing', () => {
     for (let i = 0; i < 15; i++) {
       tasks.push({
         filePath: `src/mod_${i}.ts`,
-        content: `export function func_${i}() { return ${i}; }`,
+        content: `export function func_${i}() { const local_${i} = ${i}; return local_${i}; }`,
       });
     }
 
     const results = await workerPool.parseBatch(tasks, 5);
     expect(results.length).toBe(15);
-    expect(results.every(r => r.parsed.symbols.length > 0)).toBe(true);
+    expect(results.every(r => r.parsed.precision === 'full')).toBe(true);
+    expect(results.every(r => r.parsed.symbols.some(s => s.name.startsWith('func_')))).toBe(true);
+    expect(results.every(r => !r.parsed.symbols.some(s => s.name.startsWith('local_')))).toBe(true);
   });
 });

@@ -17,14 +17,19 @@ describe('New MCP Tools (impact-analysis, diff-summary, workspaces)', () => {
     cache.close();
   });
 
-  it('getImpactAnalysis calculates dependents and test files for a core file', async () => {
+  it('getImpactAnalysis calculates dependents and test files for a core file (both unindexed and cached)', async () => {
     const res = await getImpactAnalysis(projectRoot, cache, { path: 'src/core/cache.ts' });
     expect(res.target).toBe('src/core/cache.ts');
-    expect(Array.isArray(res.directDependents)).toBe(true);
-    expect(Array.isArray(res.indirectDependents)).toBe(true);
-    expect(Array.isArray(res.impactedTests)).toBe(true);
-    expect(typeof res.totalImpactedFiles).toBe('number');
+    expect(res.directDependents.length).toBeGreaterThan(0);
+    expect(res.directDependents).toContain('src/server.ts');
+    expect(res.impactedTests.length).toBeGreaterThan(0);
+    expect(res.totalImpactedFiles).toBeGreaterThan(5);
     expect(['low', 'medium', 'high', 'critical']).toContain(res.blastRadius);
+
+    // Also verify directory target impact analysis
+    const dirRes = await getImpactAnalysis(projectRoot, cache, { path: 'src/core' });
+    expect(dirRes.target).toBe('src/core');
+    expect(dirRes.totalImpactedFiles).toBeGreaterThan(5);
   });
 
   it('getDiffSummary generates a compact change digest and impact highlights', async () => {

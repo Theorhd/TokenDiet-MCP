@@ -1,24 +1,10 @@
-import { existsSync, readdirSync, readFileSync } from 'node:fs';
-import { join } from 'node:path';
-import { resolveRoot, toPosix } from '../core/paths.js';
+import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
+import { join, basename } from 'node:path';
+import { resolveRoot, displayPath, toPosix } from '../core/paths.js';
 import { readFileSafe } from '../core/utils.js';
+import type { WorkspacePackage, WorkspacesOutput } from '../types/index.js';
 
-export interface WorkspacePackage {
-  name: string;
-  path: string;
-  version?: string;
-  dependencies?: string[];
-  devDependencies?: string[];
-  scripts?: Record<string, string>;
-}
-
-export interface WorkspacesOutput {
-  isMonorepo: boolean;
-  monorepoType?: 'pnpm' | 'npm-yarn' | 'turbo' | 'lerna' | 'cargo' | 'go-work';
-  rootPackageName?: string;
-  packages: WorkspacePackage[];
-  totalPackages: number;
-}
+export type { WorkspacePackage, WorkspacesOutput };
 
 export async function getWorkspaces(root?: string): Promise<WorkspacesOutput> {
   const projectRoot = resolveRoot(root);
@@ -134,32 +120,66 @@ function parsePnpmWorkspaceGlobs(content: string): string[] {
 
 function discoverPackagesFromGlobs(projectRoot: string, globs: string[]): WorkspacePackage[] {
   const packages: WorkspacePackage[] = [];
+  const seenPaths = new Set<string>();
+
+  const tryAddDir = (pkgDir: string): void => {
+    const relPath = toPosix(displayPath(projectRoot, pkgDir));
+    if (seenPaths.has(relPath)) return;
+
+    const pkgJson = join(pkgDir, 'package.json');
+    if (existsSync(pkgJson)) {
+      try {
+        const data = JSON.parse(readFileSync(pkgJson, 'utf-8'));
+        seenPaths.add(relPath);
+        packages.push({
+          name: data.name || basename(pkgDir),
+          path: relPath,
+          version: data.version,
+          dependencies: data.dependencies ? Object.keys(data.dependencies) : undefined,
+          devDependencies: data.devDependencies ? Object.keys(data.devDependencies) : undefined,
+          scripts: data.scripts,
+        });
+        return;
+      } catch {
+        // Ignore invalid JSON
+      }
+    }
+
+    const cargoToml = join(pkgDir, 'Cargo.toml');
+    if (existsSync(cargoToml)) {
+      const content = readFileSafe(cargoToml) ?? '';
+      const nameMatch = content.match(/name\s*=\s*"([^"]+)"/);
+      const versionMatch = content.match(/version\s*=\s*"([^"]+)"/);
+      seenPaths.add(relPath);
+      packages.push({
+        name: nameMatch?.[1] ?? basename(pkgDir),
+        path: relPath,
+        version: versionMatch?.[1],
+      });
+    }
+  };
 
   for (const pattern of globs) {
-    const baseDir = join(projectRoot, pattern.replace(/\/\*.*$/, ''));
+    if (!pattern.includes('*')) {
+      const exactDir = join(projectRoot, pattern);
+      try {
+        if (existsSync(exactDir) && statSync(exactDir).isDirectory()) {
+          tryAddDir(exactDir);
+        }
+      } catch {
+        // Ignore stat error
+      }
+      continue;
+    }
+
+    const baseDir = join(projectRoot, pattern.replace(/\/?\*.*$/, ''));
     if (!existsSync(baseDir)) continue;
 
     try {
       const entries = readdirSync(baseDir, { withFileTypes: true });
       for (const ent of entries) {
         if (ent.isDirectory()) {
-          const pkgDir = join(baseDir, ent.name);
-          const pkgJson = join(pkgDir, 'package.json');
-          if (existsSync(pkgJson)) {
-            try {
-              const data = JSON.parse(readFileSync(pkgJson, 'utf-8'));
-              packages.push({
-                name: data.name || ent.name,
-                path: toPosix(pkgDir.replace(projectRoot + '/', '')),
-                version: data.version,
-                dependencies: data.dependencies ? Object.keys(data.dependencies) : undefined,
-                devDependencies: data.devDependencies ? Object.keys(data.devDependencies) : undefined,
-                scripts: data.scripts,
-              });
-            } catch {
-              // Ignore invalid JSON
-            }
-          }
+          tryAddDir(join(baseDir, ent.name));
         }
       }
     } catch {

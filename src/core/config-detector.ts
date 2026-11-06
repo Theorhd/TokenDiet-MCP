@@ -195,8 +195,10 @@ export function parsePackageJson(root: string): Record<string, unknown> | null {
       depNames: pkg.dependencies ? Object.keys(pkg.dependencies).slice(0, 30) : [],
       devDependencies: pkg.devDependencies ? Object.keys(pkg.devDependencies).length : 0,
       devDepNames: pkg.devDependencies ? Object.keys(pkg.devDependencies).slice(0, 30) : [],
+      allDeps: { ...(pkg.dependencies || {}), ...(pkg.devDependencies || {}) },
       scripts: pkg.scripts ? Object.keys(pkg.scripts) : [],
       main: pkg.main,
+      module: pkg.module,
       bin: pkg.bin,
       engines: pkg.engines,
     };

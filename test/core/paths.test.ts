@@ -1,7 +1,24 @@
 import { describe, it, expect } from 'vitest';
-import { displayPath, hashRoot, guessRole } from '../../src/core/paths.js';
+import { displayPath, hashRoot, guessRole, resolveRoot } from '../../src/core/paths.js';
 
 describe('paths', () => {
+  describe('resolveRoot', () => {
+    it('rejects OS filesystem root "/" to prevent full disk indexing', () => {
+      expect(() => resolveRoot('/')).toThrow(/Refusing to index filesystem root/);
+    });
+
+    it('uses TOKENDIET_ROOT when root argument is omitted', () => {
+      const prev = process.env.TOKENDIET_ROOT;
+      try {
+        process.env.TOKENDIET_ROOT = process.cwd();
+        expect(resolveRoot()).toBe(process.cwd());
+      } finally {
+        if (prev === undefined) delete process.env.TOKENDIET_ROOT;
+        else process.env.TOKENDIET_ROOT = prev;
+      }
+    });
+  });
+
   describe('displayPath', () => {
     it('returns relative path when file is inside root', () => {
       const root = '/User/project';

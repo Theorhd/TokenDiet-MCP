@@ -179,6 +179,58 @@ namespace MyApp {
     expect(csRes.symbols.some(s => s.name === 'OrderHandler')).toBe(true);
   });
 
+  it('does not leak local variables inside function bodies into file symbols', () => {
+    const code = `
+export function compute(items: number[]): number {
+  const localAccumulator = 0;
+  let tempCounter = 1;
+  return items.length + localAccumulator + tempCounter;
+}
+export const MODULE_CONSTANT = 42;
+`;
+    const res = parseFile('src/compute.ts', code);
+    expect(res.precision).toBe('full');
+    expect(res.symbols.some(s => s.name === 'compute')).toBe(true);
+    expect(res.symbols.some(s => s.name === 'MODULE_CONSTANT')).toBe(true);
+    expect(res.symbols.some(s => s.name === 'localAccumulator')).toBe(false);
+    expect(res.symbols.some(s => s.name === 'tempCounter')).toBe(false);
+  });
+
+  it('parses Ruby and PHP AST symbols and imports', async () => {
+    await treeSitterManager.getParser('ruby');
+    await treeSitterManager.getParser('php');
+
+    const rubyCode = `
+require_relative './helper'
+
+class PaymentGateway
+  def charge(amount)
+    true
+  end
+end
+`;
+    const rbRes = parseFile('app/payment_gateway.rb', rubyCode);
+    expect(rbRes.tier).toBe('tree-sitter');
+    expect(rbRes.symbols.some(s => s.name === 'PaymentGateway' && s.kind === 'class')).toBe(true);
+    expect(rbRes.symbols.some(s => s.name === 'charge')).toBe(true);
+    expect(rbRes.imports.some(i => i.from === './helper')).toBe(true);
+
+    const phpCode = `<?php
+namespace App\\Services;
+use App\\Models\\Invoice;
+
+class InvoiceService {
+    public function sendInvoice(Invoice $inv): bool {
+        return true;
+    }
+}
+`;
+    const phpRes = parseFile('app/Services/InvoiceService.php', phpCode);
+    expect(phpRes.tier).toBe('tree-sitter');
+    expect(phpRes.symbols.some(s => s.name === 'InvoiceService' && s.kind === 'class')).toBe(true);
+    expect(phpRes.symbols.some(s => s.name === 'sendInvoice' && s.kind === 'method')).toBe(true);
+  });
+
   it('manages LRU eviction and memory clearance with clearMemory', async () => {
     await treeSitterManager.getParser('python');
     await treeSitterManager.getParser('go');

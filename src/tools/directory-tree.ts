@@ -1,5 +1,5 @@
-import { walk, countLines, countFilesInDir, countLocInDir } from '../core/walker.js';
-import { resolveRoot, displayPath } from '../core/paths.js';
+import { walk, countLines } from '../core/walker.js';
+import { resolveRoot, displayPath, toPosix } from '../core/paths.js';
 import { formatBytes } from '../core/utils.js';
 import type { CacheManager } from '../core/cache.js';
 
@@ -45,16 +45,31 @@ export async function getDirectoryTree(
     maxFiles: maxEntries,
   });
 
+  const cachedLinesByAbsPath = new Map<string, number>();
+  try {
+    for (const f of cache.getAllFiles()) {
+      if (f.lines > 0) {
+        cachedLinesByAbsPath.set(toPosix(f.path), f.lines);
+      }
+    }
+  } catch {
+    // Ignore cache read failure
+  }
+  const getLoc = (absPath: string): number => {
+    const rel = toPosix(displayPath(projectRoot, absPath));
+    return cachedLinesByAbsPath.get(rel) ?? countLines(absPath);
+  };
+
   if (format === 'json') {
     return JSON.stringify({
-      tree: buildJsonTree(result.entries, projectRoot, depth),
+      tree: buildJsonTree(result.entries, projectRoot, depth, getLoc),
       _partial: result.partial || undefined,
       _truncated: result.partial ? `${result.skipped} entries skipped` : undefined,
     });
   }
 
   // Build text tree
-  return buildTextTree(result.entries, projectRoot, depth, result.partial);
+  return buildTextTree(result.entries, projectRoot, depth, result.partial, getLoc);
 }
 
 function buildTextTree(
@@ -62,6 +77,7 @@ function buildTextTree(
   root: string,
   maxDepth: number,
   partial: boolean,
+  getLoc: (absPath: string) => number,
 ): string {
   const lines: string[] = [];
   const rootName = root.split('/').pop() ?? root;
@@ -70,7 +86,7 @@ function buildTextTree(
   const rootFiles = entries.filter(e => !e.isDir && !e.relative.includes('/')).length;
   const rootLoc = entries
     .filter(e => !e.isDir && !e.relative.includes('/'))
-    .reduce((sum, e) => sum + countLines(e.path), 0);
+    .reduce((sum, e) => sum + getLoc(e.path), 0);
   const rootSize = entries
     .filter(e => !e.isDir && !e.relative.includes('/'))
     .reduce((sum, e) => sum + e.size, 0);
@@ -79,7 +95,7 @@ function buildTextTree(
 
   // Build a tree structure
   const tree = buildTree(entries);
-  renderTree(tree, '', true, root, lines, 0, maxDepth);
+  renderTree(tree, '', true, root, lines, 0, maxDepth, getLoc);
 
   if (partial) {
     lines.push('...');
@@ -127,13 +143,12 @@ function renderTree(
   lines: string[],
   depth: number,
   maxDepth: number,
+  getLoc: (absPath: string) => number,
 ): void {
   if (depth >= maxDepth) return;
 
   const dirs = Array.from(node.dirs.entries()).sort(([a], [b]) => a.localeCompare(b));
   const files = [...node.files].sort((a, b) => a.name.localeCompare(b.name));
-
-  const totalItems = dirs.length + files.length;
 
   for (let i = 0; i < dirs.length; i++) {
     const [name, dir] = dirs[i]!;
@@ -142,18 +157,18 @@ function renderTree(
     const childPrefix = isLast ? '    ' : '│   ';
 
     const fileCount = countFilesRecursive(dir);
-    const loc = countLocRecursive(dir, rootPath);
+    const loc = countLocRecursive(dir, rootPath, getLoc);
     const entryMarker = isEntryPoint(name) ? ' *' : '';
     lines.push(`${prefix}${connector}${name}/ (${fileCount} files, ${loc} LOC)${entryMarker}`);
 
-    renderTree(dir, prefix + childPrefix, false, rootPath, lines, depth + 1, maxDepth);
+    renderTree(dir, prefix + childPrefix, false, rootPath, lines, depth + 1, maxDepth, getLoc);
   }
 
   for (let i = 0; i < Math.min(files.length, 50); i++) {
     const file = files[i]!;
     const isLast = i === Math.min(files.length, 50) - 1;
     const connector = isLast ? '└── ' : '├── ';
-    const loc = countLines(file.path);
+    const loc = getLoc(file.path);
     const entryMarker = isEntryPoint(file.name) ? ' *' : '';
     lines.push(`${prefix}${connector}${file.name} [${file.lang} ${formatBytes(file.size)} ${loc}L]${entryMarker}`);
   }
@@ -171,13 +186,13 @@ function countFilesRecursive(node: DirNode): number {
   return count;
 }
 
-function countLocRecursive(node: DirNode, rootPath: string): number {
+function countLocRecursive(node: DirNode, rootPath: string, getLoc: (absPath: string) => number): number {
   let loc = 0;
   for (const file of node.files) {
-    loc += countLines(file.path);
+    loc += getLoc(file.path);
   }
   for (const dir of node.dirs.values()) {
-    loc += countLocRecursive(dir, rootPath);
+    loc += countLocRecursive(dir, rootPath, getLoc);
   }
   return loc;
 }
@@ -195,16 +210,23 @@ function buildJsonTree(
   entries: { path: string; relative: string; isDir: boolean; size: number; lang: string }[],
   root: string,
   maxDepth: number,
+  getLoc: (absPath: string) => number,
 ): Record<string, unknown> {
   const tree = buildTree(entries);
-  return nodeToJson(tree, root, 0, maxDepth);
+  return nodeToJson(tree, root, 0, maxDepth, getLoc);
 }
 
-function nodeToJson(node: DirNode, rootPath: string, depth: number, maxDepth: number): Record<string, unknown> {
+function nodeToJson(
+  node: DirNode,
+  rootPath: string,
+  depth: number,
+  maxDepth: number,
+  getLoc: (absPath: string) => number,
+): Record<string, unknown> {
   const children: Record<string, unknown> = {};
   if (depth < maxDepth) {
     for (const [name, dir] of node.dirs) {
-      children[name + '/'] = nodeToJson(dir, rootPath, depth + 1, maxDepth);
+      children[name + '/'] = nodeToJson(dir, rootPath, depth + 1, maxDepth, getLoc);
     }
   }
   const files: Record<string, { lang: string; size: number; loc: number }> = {};
@@ -212,7 +234,7 @@ function nodeToJson(node: DirNode, rootPath: string, depth: number, maxDepth: nu
     files[file.name] = {
       lang: file.lang,
       size: file.size,
-      loc: countLines(file.path),
+      loc: getLoc(file.path),
     };
   }
   return { ...children, ...files };

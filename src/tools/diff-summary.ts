@@ -2,25 +2,13 @@ import { resolveRoot } from '../core/paths.js';
 import { getChangedSymbols } from './changed-symbols.js';
 import { getImpactAnalysis } from './impact-analysis.js';
 import type { CacheManager } from '../core/cache.js';
+import type { DiffSummaryOutput } from '../types/index.js';
+
+export type { DiffSummaryOutput };
 
 export interface DiffSummaryOptions {
   base?: string;
   stagedOnly?: boolean;
-}
-
-export interface DiffSummaryOutput {
-  branch: string;
-  filesChanged: number;
-  totalAddedSymbols: number;
-  totalModifiedSymbols: number;
-  totalRemovedSymbols: number;
-  criticalChanges: Array<{
-    file: string;
-    impactedFiles: number;
-    impactedTests: string[];
-    blastRadius: string;
-  }>;
-  summaryText: string;
 }
 
 export async function getDiffSummary(

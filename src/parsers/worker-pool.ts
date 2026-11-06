@@ -1,6 +1,7 @@
-import { Worker, isMainThread, parentPort, workerData } from 'node:worker_threads';
+import { Worker, isMainThread, parentPort } from 'node:worker_threads';
 import { cpus } from 'node:os';
 import { parseFile } from './index.js';
+import { treeSitterManager } from './treesitter.js';
 import type { FileOverview } from '../types/index.js';
 
 export interface ParseTask {
@@ -15,7 +16,12 @@ export interface ParseResult {
 
 // ─── Worker Thread Execution Logic ────────────────────────────────
 if (!isMainThread && parentPort) {
-  parentPort.on('message', (tasks: ParseTask[]) => {
+  parentPort.on('message', async (tasks: ParseTask[]) => {
+    try {
+      await treeSitterManager.init();
+    } catch {
+      // Fallback to regex if WASM init fails
+    }
     const results: ParseResult[] = [];
     for (const task of tasks) {
       try {
@@ -52,6 +58,12 @@ export class WorkerPool {
    */
   async parseBatch(tasks: ParseTask[], concurrencyThreshold = 40): Promise<ParseResult[]> {
     if (tasks.length === 0) return [];
+
+    try {
+      await treeSitterManager.init();
+    } catch {
+      // Non-fatal
+    }
 
     // For small batches or single worker, run synchronously on main thread
     if (tasks.length < concurrencyThreshold || this.maxWorkers <= 1 || process.env.TOKENDIET_DISABLE_WORKERS === '1') {

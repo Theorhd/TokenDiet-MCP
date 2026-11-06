@@ -98,23 +98,40 @@ export class TreeSitterManager {
           ? __dirname
           : dirname(fileURLToPath(import.meta.url));
 
-        let dir = currentDir;
-        for (let i = 0; i < 6; i++) {
-          const candidate = join(dir, 'node_modules', 'web-tree-sitter', 'tree-sitter.wasm');
-          if (existsSync(candidate)) {
-            coreWasmPath = candidate;
+        const localCandidates = [
+          join(currentDir, 'wasms', 'tree-sitter.wasm'),
+          join(currentDir, '..', 'wasms', 'tree-sitter.wasm'),
+          join(currentDir, '..', '..', 'wasms', 'tree-sitter.wasm'),
+        ];
+        for (const c of localCandidates) {
+          if (existsSync(c)) {
+            coreWasmPath = c;
             break;
           }
-          const parent = dirname(dir);
-          if (parent === dir) break;
-          dir = parent;
+        }
+
+        if (!coreWasmPath) {
+          let dir = currentDir;
+          for (let i = 0; i < 6; i++) {
+            const candidate = join(dir, 'node_modules', 'web-tree-sitter', 'tree-sitter.wasm');
+            if (existsSync(candidate)) {
+              coreWasmPath = candidate;
+              break;
+            }
+            const parent = dirname(dir);
+            if (parent === dir) break;
+            dir = parent;
+          }
         }
       } catch {
         // Fallback
       }
 
       if (!coreWasmPath) {
-        coreWasmPath = resolve('node_modules/web-tree-sitter/tree-sitter.wasm');
+        const distCandidate = resolve('dist/wasms/tree-sitter.wasm');
+        coreWasmPath = existsSync(distCandidate)
+          ? distCandidate
+          : resolve('node_modules/web-tree-sitter/tree-sitter.wasm');
       }
 
       await Parser.init({
@@ -126,7 +143,9 @@ export class TreeSitterManager {
       this.initialized = true;
 
       // Preload available language WASMs
-      const preloadLangs: SupportedTreeSitterLang[] = ['typescript', 'tsx', 'javascript', 'python', 'go', 'rust'];
+      const preloadLangs: SupportedTreeSitterLang[] = [
+        'typescript', 'tsx', 'javascript', 'python', 'go', 'rust', 'java', 'c_sharp', 'ruby', 'php',
+      ];
       for (const lang of preloadLangs) {
         try {
           await this.getParser(lang);
@@ -150,7 +169,7 @@ export class TreeSitterManager {
     return null;
   }
 
-  private maxActiveGrammars = 6;
+  private maxActiveGrammars = 12;
   private lruOrder: SupportedTreeSitterLang[] = [];
 
   private markUsed(lang: SupportedTreeSitterLang): void {
@@ -254,6 +273,15 @@ export class TreeSitterManager {
         return true;
       });
 
+      // Deduplicate exports by name + kind
+      const seenExports = new Set<string>();
+      const uniqueExports = exports.filter(e => {
+        const key = `${e.kind}:${e.name}`;
+        if (seenExports.has(key)) return false;
+        seenExports.add(key);
+        return true;
+      });
+
       // Deduplicate imports
       const seenImports = new Map<string, ImportInfo>();
       for (const imp of imports) {
@@ -278,7 +306,8 @@ export class TreeSitterManager {
       else if (fname.includes('hook') || fname.includes('composable')) purpose = 'React hook / composable';
       else if (fname.includes('service')) purpose = 'Service layer';
       else if (fname.includes('component')) purpose = 'UI component';
-      else if (uniqueSymbols.length > 0) purpose = `${uniqueSymbols.length} exported symbols`;
+      else if (uniqueExports.length > 0) purpose = `${uniqueExports.length} exported symbols`;
+      else if (uniqueSymbols.length > 0) purpose = `${uniqueSymbols.length} symbols`;
 
       return {
         language: lang === 'c_sharp' ? 'cs' : lang,
@@ -287,13 +316,25 @@ export class TreeSitterManager {
         lines: lines.length,
         bytes: Buffer.byteLength(content),
         imports: Array.from(seenImports.values()),
-        exports,
+        exports: uniqueExports,
         symbols: uniqueSymbols,
         precision: 'full',
       };
     } catch {
       return null;
     }
+  }
+
+  private extractCleanSignature(node: Parser.SyntaxNode, lines: string[]): string {
+    const startRow = node.startPosition.row;
+    const bodyNode = node.childForFieldName('body');
+    const endRow = bodyNode ? bodyNode.startPosition.row : Math.min(node.endPosition.row, startRow + 4);
+    const slice = lines.slice(startRow, Math.min(endRow + 1, startRow + 6)).join(' ');
+    return slice
+      .replace(/\{[\s\S]*$/, '')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .slice(0, 90);
   }
 
   private extractAST(
@@ -305,28 +346,84 @@ export class TreeSitterManager {
     imports: ImportInfo[],
     exports: ExportInfo[],
   ): void {
+    const FUNCTION_BODY_CONTAINERS = new Set([
+      'function_declaration',
+      'generator_function_declaration',
+      'method_definition',
+      'arrow_function',
+      'function_expression',
+      'function_definition',
+      'method_declaration',
+      'constructor_declaration',
+      'function_item',
+      'closure_expression',
+      'lambda_expression',
+      'method',
+      'singleton_method',
+      'anonymous_function_creation_expression',
+    ]);
+
     const visit = (node: Parser.SyntaxNode, parentExported = false) => {
       const type = node.type;
 
       // ─── TS / JS ───
       if (lang === 'typescript' || lang === 'tsx' || lang === 'javascript') {
         if (type === 'export_statement') {
-          // Check re-export: export { a } from './b' or export * from './b'
           const sourceNode = node.childForFieldName('source');
-          if (sourceNode) {
-            const from = sourceNode.text.replace(/['"]/g, '');
-            const names: string[] = [];
-            for (const child of node.children) {
-              if (child.type === 'export_clause') {
-                for (const spec of child.children) {
-                  if (spec.type === 'export_specifier') {
-                    const nameNode = spec.childForFieldName('name');
-                    if (nameNode) names.push(nameNode.text);
+          const from = sourceNode ? sourceNode.text.replace(/['"]/g, '') : null;
+          const clauseNames: Array<{ name: string; exportedAs: string }> = [];
+
+          for (const child of node.children) {
+            if (child.type === 'export_clause') {
+              for (const spec of child.children) {
+                if (spec.type === 'export_specifier') {
+                  const nameNode = spec.childForFieldName('name');
+                  const aliasNode = spec.childForFieldName('alias');
+                  if (nameNode) {
+                    clauseNames.push({
+                      name: nameNode.text,
+                      exportedAs: aliasNode ? aliasNode.text : nameNode.text,
+                    });
                   }
                 }
               }
             }
-            imports.push({ from, names, isExternal: !from.startsWith('.'), isDefault: false });
+          }
+
+          if (from) {
+            imports.push({
+              from,
+              names: clauseNames.map(c => c.name),
+              isExternal: !from.startsWith('.') && !from.startsWith('/'),
+              isDefault: false,
+            });
+            for (const c of clauseNames) {
+              exports.push({
+                name: c.exportedAs,
+                kind: 'const',
+                line: node.startPosition.row + 1,
+                signature: `export { ${c.exportedAs} } from '${from}'`.slice(0, 90),
+                doc: '',
+                exported: true,
+              });
+            }
+          } else if (clauseNames.length > 0) {
+            for (const c of clauseNames) {
+              const existingSym = symbols.find(s => s.name === c.name);
+              if (existingSym) {
+                existingSym.exported = true;
+                exports.push({ ...existingSym, name: c.exportedAs, exported: true });
+              } else {
+                exports.push({
+                  name: c.exportedAs,
+                  kind: 'const',
+                  line: node.startPosition.row + 1,
+                  signature: `export { ${c.exportedAs} }`.slice(0, 90),
+                  doc: '',
+                  exported: true,
+                });
+              }
+            }
           }
 
           for (const child of node.children) {
@@ -382,20 +479,20 @@ export class TreeSitterManager {
             const name = nameNode.text;
             const startLine = node.startPosition.row + 1;
             const endLine = node.endPosition.row + 1;
-            const sigLine = lines[startLine - 1] ?? '';
             const doc = this.extractLeadingDoc(node, lines);
             const sym: SymbolInfo = {
               name,
               kind: 'function',
               line: startLine,
               endLine,
-              signature: sigLine.slice(0, 90).replace(/\{.*$/, '').trim(),
+              signature: this.extractCleanSignature(node, lines),
               doc,
               exported: parentExported,
             };
             symbols.push(sym);
             if (parentExported) exports.push({ ...sym, kind: 'function' });
           }
+          return; // Do not recurse into function body
         }
 
         // Classes
@@ -405,14 +502,13 @@ export class TreeSitterManager {
             const name = nameNode.text;
             const startLine = node.startPosition.row + 1;
             const endLine = node.endPosition.row + 1;
-            const sigLine = lines[startLine - 1] ?? '';
             const doc = this.extractLeadingDoc(node, lines);
             const sym: SymbolInfo = {
               name,
               kind: 'class',
               line: startLine,
               endLine,
-              signature: sigLine.slice(0, 90).replace(/\{.*$/, '').trim(),
+              signature: this.extractCleanSignature(node, lines),
               doc,
               exported: parentExported,
             };
@@ -442,6 +538,7 @@ export class TreeSitterManager {
             symbols.push(sym);
             if (parentExported) exports.push({ ...sym, kind: 'interface' });
           }
+          return;
         }
 
         // Types
@@ -465,6 +562,7 @@ export class TreeSitterManager {
             symbols.push(sym);
             if (parentExported) exports.push({ ...sym, kind: 'type' });
           }
+          return;
         }
 
         // Enums
@@ -488,6 +586,7 @@ export class TreeSitterManager {
             symbols.push(sym);
             if (parentExported) exports.push({ ...sym, kind: 'enum' });
           }
+          return;
         }
 
         // Methods
@@ -497,48 +596,59 @@ export class TreeSitterManager {
             const name = nameNode.text;
             const startLine = node.startPosition.row + 1;
             const endLine = node.endPosition.row + 1;
-            const sigLine = lines[startLine - 1] ?? '';
             const doc = this.extractLeadingDoc(node, lines);
             symbols.push({
               name,
               kind: 'method',
               line: startLine,
               endLine,
-              signature: sigLine.slice(0, 90).replace(/\{.*$/, '').trim(),
+              signature: this.extractCleanSignature(node, lines),
               doc,
               exported: false,
             });
           }
+          return; // Do not recurse into method body
         }
 
-        // Variables / Const arrows
+        // Top-level or exported Variables / Const arrows
         if (type === 'lexical_declaration' || type === 'variable_declaration') {
-          for (const declarator of node.children) {
-            if (declarator.type === 'variable_declarator') {
-              const nameNode = declarator.childForFieldName('name');
-              const valueNode = declarator.childForFieldName('value');
-              if (nameNode) {
-                const name = nameNode.text;
-                const isFunction = valueNode?.type === 'arrow_function' || valueNode?.type === 'function_expression';
-                const startLine = declarator.startPosition.row + 1;
-                const endLine = declarator.endPosition.row + 1;
-                const sigLine = lines[startLine - 1] ?? '';
-                const doc = this.extractLeadingDoc(node, lines);
-                const kind = isFunction ? 'function' : 'const';
-                const sym: SymbolInfo = {
-                  name,
-                  kind,
-                  line: startLine,
-                  endLine,
-                  signature: sigLine.slice(0, 90).replace(/\{.*$/, '').trim(),
-                  doc,
-                  exported: parentExported,
-                };
-                symbols.push(sym);
-                if (parentExported) exports.push({ ...sym, kind: kind as ExportInfo['kind'] });
+          const parentType = node.parent?.type;
+          const isModuleScope =
+            parentExported ||
+            parentType === 'program' ||
+            parentType === 'internal_module' ||
+            parentType === 'module' ||
+            parentType === 'statement_block' && (node.parent?.parent?.type === 'internal_module' || node.parent?.parent?.type === 'module');
+
+          if (isModuleScope) {
+            for (const declarator of node.children) {
+              if (declarator.type === 'variable_declarator') {
+                const nameNode = declarator.childForFieldName('name');
+                const valueNode = declarator.childForFieldName('value');
+                if (nameNode && nameNode.type === 'identifier') {
+                  const name = nameNode.text;
+                  const isFunction = valueNode?.type === 'arrow_function' || valueNode?.type === 'function_expression';
+                  const startLine = declarator.startPosition.row + 1;
+                  const endLine = declarator.endPosition.row + 1;
+                  const sigLine = lines[startLine - 1] ?? '';
+                  const doc = this.extractLeadingDoc(node, lines);
+                  const kind = isFunction ? 'function' : 'const';
+                  const sym: SymbolInfo = {
+                    name,
+                    kind,
+                    line: startLine,
+                    endLine,
+                    signature: sigLine.slice(0, 90).replace(/\{.*$/, '').trim(),
+                    doc,
+                    exported: parentExported,
+                  };
+                  symbols.push(sym);
+                  if (parentExported) exports.push({ ...sym, kind: kind as ExportInfo['kind'] });
+                }
               }
             }
           }
+          return; // Do not recurse into variable initializer bodies
         }
       }
 
@@ -548,8 +658,14 @@ export class TreeSitterManager {
           for (const child of node.children) {
             if (child.type === 'dotted_name') {
               imports.push({ from: child.text, names: [child.text], isExternal: true, isDefault: false });
+            } else if (child.type === 'aliased_import') {
+              const nameNode = child.childForFieldName('name');
+              if (nameNode) {
+                imports.push({ from: nameNode.text, names: [nameNode.text], isExternal: true, isDefault: false });
+              }
             }
           }
+          return;
         } else if (type === 'import_from_statement') {
           const moduleNode = node.childForFieldName('module_name');
           if (moduleNode) {
@@ -558,9 +674,14 @@ export class TreeSitterManager {
             for (const child of node.children) {
               if (child.type === 'dotted_name' && child !== moduleNode) names.push(child.text);
               else if (child.type === 'identifier') names.push(child.text);
+              else if (child.type === 'aliased_import') {
+                const orig = child.childForFieldName('name');
+                if (orig) names.push(orig.text);
+              }
             }
             imports.push({ from, names, isExternal: !from.startsWith('.'), isDefault: false });
           }
+          return;
         } else if (type === 'function_definition') {
           const nameNode = node.childForFieldName('name');
           if (nameNode) {
@@ -569,18 +690,20 @@ export class TreeSitterManager {
             const endLine = node.endPosition.row + 1;
             const sigLine = lines[startLine - 1] ?? '';
             const doc = this.extractPythonDocstring(node) || this.extractLeadingDoc(node, lines);
+            const inClass = node.parent?.type === 'block' && node.parent?.parent?.type === 'class_definition';
             const sym: SymbolInfo = {
               name,
-              kind: 'function',
+              kind: inClass ? 'method' : 'function',
               line: startLine,
               endLine,
               signature: sigLine.slice(0, 90).replace(/:$/, '').trim(),
               doc,
-              exported: !name.startsWith('_'),
+              exported: !inClass && !name.startsWith('_'),
             };
             symbols.push(sym);
             if (sym.exported) exports.push({ ...sym, kind: 'function' });
           }
+          return; // Do not recurse into Python function body
         } else if (type === 'class_definition') {
           const nameNode = node.childForFieldName('name');
           if (nameNode) {
@@ -612,6 +735,7 @@ export class TreeSitterManager {
             const from = pathNode.text.replace(/"/g, '');
             imports.push({ from, names: [], isExternal: !from.startsWith('.'), isDefault: false });
           }
+          return;
         } else if (type === 'function_declaration') {
           const nameNode = node.childForFieldName('name');
           if (nameNode) {
@@ -633,6 +757,7 @@ export class TreeSitterManager {
             symbols.push(sym);
             if (isExported) exports.push({ ...sym, kind: 'function' });
           }
+          return;
         } else if (type === 'method_declaration') {
           const nameNode = node.childForFieldName('name');
           const receiverNode = node.childForFieldName('receiver');
@@ -654,6 +779,7 @@ export class TreeSitterManager {
             };
             symbols.push(sym);
           }
+          return;
         } else if (type === 'type_spec') {
           const nameNode = node.childForFieldName('name');
           const typeNode = node.childForFieldName('type');
@@ -677,6 +803,7 @@ export class TreeSitterManager {
             symbols.push(sym);
             if (isExported) exports.push({ ...sym, kind });
           }
+          return;
         }
       }
 
@@ -684,7 +811,8 @@ export class TreeSitterManager {
       else if (lang === 'rust') {
         if (type === 'use_declaration') {
           const useText = node.text.replace(/^pub\s+/, '').replace(/^use\s+/, '').replace(/;$/, '');
-          imports.push({ from: useText, names: [useText], isExternal: !useText.startsWith('crate::') && !useText.startsWith('super::'), isDefault: false });
+          imports.push({ from: useText, names: [useText], isExternal: !useText.startsWith('crate::') && !useText.startsWith('super::') && !useText.startsWith('self::'), isDefault: false });
+          return;
         } else if (type === 'function_item') {
           const nameNode = node.childForFieldName('name');
           if (nameNode) {
@@ -706,6 +834,7 @@ export class TreeSitterManager {
             symbols.push(sym);
             if (isPub) exports.push({ ...sym, kind: 'function' });
           }
+          return;
         } else if (type === 'struct_item' || type === 'enum_item' || type === 'trait_item') {
           const nameNode = node.childForFieldName('name');
           if (nameNode) {
@@ -728,12 +857,19 @@ export class TreeSitterManager {
             symbols.push(sym);
             if (isPub) exports.push({ ...sym, kind });
           }
+          return;
         }
       }
 
       // ─── Java / C# ───
       else if (lang === 'java' || lang === 'c_sharp') {
-        if (type === 'class_declaration' || type === 'interface_declaration' || type === 'enum_declaration' || type === 'struct_declaration') {
+        if (type === 'import_declaration' || type === 'using_directive') {
+          const text = node.text.replace(/^(?:import|using)\s+(?:static\s+)?/, '').replace(/;$/, '').trim();
+          if (text) {
+            imports.push({ from: text, names: [text.split('.').pop() ?? text], isExternal: true, isDefault: false });
+          }
+          return;
+        } else if (type === 'class_declaration' || type === 'interface_declaration' || type === 'enum_declaration' || type === 'struct_declaration') {
           const nameNode = node.childForFieldName('name');
           if (nameNode) {
             const name = nameNode.text;
@@ -774,7 +910,129 @@ export class TreeSitterManager {
               exported: isExported,
             });
           }
+          return;
         }
+      }
+
+      // ─── Ruby ───
+      else if (lang === 'ruby') {
+        if (type === 'call') {
+          const methodNode = node.childForFieldName('method');
+          const argsNode = node.childForFieldName('arguments');
+          if (methodNode && (methodNode.text === 'require' || methodNode.text === 'require_relative') && argsNode) {
+            const mod = argsNode.text.replace(/^[\s('"]+|[\s)'"]+$/g, '');
+            if (mod) {
+              imports.push({
+                from: mod,
+                names: [],
+                isExternal: methodNode.text === 'require' && !mod.startsWith('.'),
+                isDefault: true,
+              });
+            }
+          }
+        } else if (type === 'class' || type === 'module') {
+          const nameNode = node.childForFieldName('name');
+          if (nameNode) {
+            const name = nameNode.text;
+            const startLine = node.startPosition.row + 1;
+            const endLine = node.endPosition.row + 1;
+            const sigLine = lines[startLine - 1] ?? '';
+            const doc = this.extractLeadingDoc(node, lines);
+            const kind = type === 'class' ? 'class' : 'module';
+            const sym: SymbolInfo = {
+              name,
+              kind,
+              line: startLine,
+              endLine,
+              signature: sigLine.slice(0, 90).trim(),
+              doc,
+              exported: true,
+            };
+            symbols.push(sym);
+            exports.push({ ...sym, kind });
+          }
+        } else if (type === 'method' || type === 'singleton_method') {
+          const nameNode = node.childForFieldName('name');
+          if (nameNode) {
+            const name = nameNode.text;
+            const startLine = node.startPosition.row + 1;
+            const endLine = node.endPosition.row + 1;
+            const sigLine = lines[startLine - 1] ?? '';
+            const doc = this.extractLeadingDoc(node, lines);
+            const sym: SymbolInfo = {
+              name,
+              kind: 'function',
+              line: startLine,
+              endLine,
+              signature: sigLine.slice(0, 90).trim(),
+              doc,
+              exported: !name.startsWith('_'),
+            };
+            symbols.push(sym);
+            if (sym.exported) exports.push({ ...sym, kind: 'function' });
+          }
+          return;
+        }
+      }
+
+      // ─── PHP ───
+      else if (lang === 'php') {
+        if (type === 'namespace_use_declaration') {
+          const useText = node.text.replace(/^use\s+/i, '').replace(/;$/, '').trim();
+          if (useText) {
+            imports.push({ from: useText, names: [useText.split('\\').pop() ?? useText], isExternal: true, isDefault: false });
+          }
+          return;
+        } else if (type === 'class_declaration' || type === 'interface_declaration' || type === 'trait_declaration' || type === 'enum_declaration') {
+          const nameNode = node.childForFieldName('name');
+          if (nameNode) {
+            const name = nameNode.text;
+            const startLine = node.startPosition.row + 1;
+            const endLine = node.endPosition.row + 1;
+            const sigLine = lines[startLine - 1] ?? '';
+            const doc = this.extractLeadingDoc(node, lines);
+            const kind = type.includes('class') ? 'class' : type.includes('interface') ? 'interface' : type.includes('trait') ? 'trait' : 'enum';
+            const sym: SymbolInfo = {
+              name,
+              kind,
+              line: startLine,
+              endLine,
+              signature: sigLine.slice(0, 90).replace(/\{.*$/, '').trim(),
+              doc,
+              exported: true,
+            };
+            symbols.push(sym);
+            exports.push({ ...sym, kind });
+          }
+        } else if (type === 'function_definition' || type === 'method_declaration') {
+          const nameNode = node.childForFieldName('name');
+          if (nameNode) {
+            const name = nameNode.text;
+            const startLine = node.startPosition.row + 1;
+            const endLine = node.endPosition.row + 1;
+            const sigLine = lines[startLine - 1] ?? '';
+            const doc = this.extractLeadingDoc(node, lines);
+            const isPrivate = node.text.startsWith('private ') || node.text.startsWith('protected ');
+            const kind = type === 'method_declaration' ? 'method' : 'function';
+            const sym: SymbolInfo = {
+              name,
+              kind,
+              line: startLine,
+              endLine,
+              signature: sigLine.slice(0, 90).replace(/\{.*$/, '').trim(),
+              doc,
+              exported: !isPrivate,
+            };
+            symbols.push(sym);
+            if (!isPrivate && kind === 'function') exports.push({ ...sym, kind: 'function' });
+          }
+          return;
+        }
+      }
+
+      // Skip recursing into function/method body containers
+      if (FUNCTION_BODY_CONTAINERS.has(type)) {
+        return;
       }
 
       // Recurse children

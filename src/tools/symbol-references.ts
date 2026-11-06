@@ -1,5 +1,4 @@
-import { resolve } from 'node:path';
-import { resolveRoot, displayPath } from '../core/paths.js';
+import { resolveRoot, displayPath, resolveSecurePath, toPosix } from '../core/paths.js';
 import { walk } from '../core/walker.js';
 import { readFileSafe, truncate } from '../core/utils.js';
 import type { SymbolReferencesOutput, SymbolReference } from '../types/index.js';
@@ -23,12 +22,26 @@ export async function getSymbolReferences(
     throw new Error('Symbol name is required');
   }
 
+  let normalizedDefPath: string | undefined;
+  if (defPath) {
+    const resolved = resolveSecurePath(projectRoot, defPath);
+    normalizedDefPath = toPosix(displayPath(projectRoot, resolved));
+  }
+
   const cleanSymbol = symbol.trim();
   const symbolRegex = new RegExp(`\\b${escapeRegExp(cleanSymbol)}\\b`);
   const walkResult = walk(projectRoot, { maxDepth: 8, includeTests: true });
   const sourceFiles = walkResult.entries.filter(e =>
-    !e.isDir && ['ts', 'tsx', 'js', 'jsx', 'py', 'go', 'rs', 'java', 'rb'].includes(e.lang),
+    !e.isDir && ['ts', 'tsx', 'js', 'jsx', 'py', 'go', 'rs', 'java', 'rb', 'cs', 'php'].includes(e.lang),
   );
+
+  if (normalizedDefPath) {
+    sourceFiles.sort((a, b) => {
+      const aMatch = toPosix(a.relative) === normalizedDefPath ? 0 : 1;
+      const bMatch = toPosix(b.relative) === normalizedDefPath ? 0 : 1;
+      return aMatch - bMatch;
+    });
+  }
 
   const references: SymbolReference[] = [];
 

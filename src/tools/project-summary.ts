@@ -31,15 +31,27 @@ export async function getProjectSummary(
     }
   }
 
+  const cachedLines = new Map<string, number>();
+  if (cache.getIndexedAt()) {
+    for (const f of cache.getAllFiles()) {
+      cachedLines.set(f.path, f.lines);
+    }
+  }
+
   const langStats = new Map<string, { files: number; loc: number }>();
   for (const entry of fullWalk.entries) {
     if (entry.isDir) continue;
     const lang = entry.lang || 'other';
     const stat = langStats.get(lang) || { files: 0, loc: 0 };
     stat.files++;
-    try {
-      stat.loc += countLines(entry.path);
-    } catch { /* skip */ }
+    const cachedLoc = cachedLines.get(entry.relative);
+    if (cachedLoc !== undefined) {
+      stat.loc += cachedLoc;
+    } else {
+      try {
+        stat.loc += countLines(entry.path);
+      } catch { /* skip */ }
+    }
     langStats.set(lang, stat);
   }
 
@@ -54,12 +66,19 @@ export async function getProjectSummary(
 
   // Detect tools and frameworks
   const pkg = parsePackageJson(projectRoot);
-  const deps = (pkg?.dependencies as Record<string, string>) ?? {};
+  const deps = (pkg?.allDeps as Record<string, string>) ?? (pkg?.dependencies as Record<string, string>) ?? {};
   const detected = detectAll(projectRoot, deps);
+
+  const rawWorkspaces = pkg?.workspaces;
+  const workspaces: string[] = Array.isArray(rawWorkspaces)
+    ? rawWorkspaces
+    : Array.isArray((rawWorkspaces as any)?.packages)
+      ? (rawWorkspaces as any).packages
+      : [];
 
   // Determine project kind
   let kind: ProjectSummary['kind'] = 'mixed';
-  if (pkg?.workspaces) {
+  if (workspaces.length > 0) {
     kind = 'monorepo';
   } else if (pkg?.bin) {
     kind = 'app';
@@ -85,7 +104,7 @@ export async function getProjectSummary(
       packageManager: detected.packageManager,
       hasLockfile: detected.packageManager !== 'unknown',
     },
-    workspaces: (pkg?.workspaces as string[]) ?? [],
+    workspaces,
     stats: {
       fileCount: fullWalk.entries.filter(e => !e.isDir).length,
       skippedCount: fullWalk.skipped,

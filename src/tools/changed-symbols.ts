@@ -1,6 +1,7 @@
 import { execFileSync } from 'node:child_process';
 import { resolveRoot, toPosix, resolveSecurePath } from '../core/paths.js';
 import { parseFile } from '../parsers/index.js';
+import { treeSitterManager } from '../parsers/treesitter.js';
 import { readFileSafe } from '../core/utils.js';
 import type { CacheManager } from '../core/cache.js';
 import type { ChangedSymbolsOptions, ChangedSymbolsOutput, ChangedFileSummary } from '../types/index.js';
@@ -54,22 +55,28 @@ export async function getChangedSymbols(
       cwd: projectRoot,
       encoding: 'utf-8',
       stdio: ['pipe', 'pipe', 'ignore'],
-    }).trim();
+    }).replace(/\r?\n$/, '');
 
-    if (!statusOutput) {
+    if (!statusOutput.trim()) {
       return { branch, changedFiles: [], totalFilesChanged: 0 };
+    }
+
+    try {
+      await treeSitterManager.init();
+    } catch {
+      // Fallback to regex
     }
 
     const lines = statusOutput.split('\n');
 
     for (const line of lines) {
-      const trimmed = line.trim();
-      if (!trimmed) continue;
+      if (!line.trim()) continue;
 
       let status: ChangedFileSummary['status'] = 'modified';
       let rawFilePath = '';
 
       if (base || stagedOnly) {
+        const trimmed = line.trim();
         const parts = trimmed.split(/\s+/);
         const statusCode = parts[0] ?? 'M';
         rawFilePath = parts.slice(1).join(' ');
@@ -83,8 +90,11 @@ export async function getChangedSymbols(
           rawFilePath = renameParts[renameParts.length - 1] ?? rawFilePath;
         } else status = 'modified';
       } else {
-        const statusCode = trimmed.slice(0, 2).trim();
-        rawFilePath = trimmed.slice(3).trim();
+        const statusCode = line.slice(0, 2).trim();
+        rawFilePath = line.slice(3).trim();
+        if (rawFilePath.includes(' -> ')) {
+          rawFilePath = rawFilePath.split(' -> ').pop()!.trim();
+        }
 
         if (statusCode === '??') status = 'untracked';
         else if (statusCode === 'A' || statusCode === 'AM') status = 'added';
@@ -109,7 +119,7 @@ export async function getChangedSymbols(
       } catch {
         continue;
       }
-      const currentContent = readFileSafe(fullCurrentPath);
+      const currentContent = status === 'deleted' ? null : readFileSafe(fullCurrentPath);
 
       let oldContent: string | null = null;
       if (status !== 'untracked') {
@@ -128,6 +138,8 @@ export async function getChangedSymbols(
       if (currentContent && oldContent) {
         const currentParsed = parseFile(fullCurrentPath, currentContent);
         const oldParsed = parseFile(fullCurrentPath, oldContent);
+        const currentLines = currentContent.split('\n');
+        const oldLines = oldContent.split('\n');
 
         const oldSymMap = new Map(oldParsed.symbols.map(s => [s.name, s]));
         const newSymMap = new Map(currentParsed.symbols.map(s => [s.name, s]));
@@ -136,12 +148,20 @@ export async function getChangedSymbols(
           const old = oldSymMap.get(name);
           if (!old) {
             addedSymbols.push(name);
-          } else if (old.signature !== sym.signature || old.line !== sym.line) {
+          } else if (old.signature !== sym.signature) {
+            modifiedSymbols.push(name);
+          } else if (old.endLine && sym.endLine && old.endLine >= old.line && sym.endLine >= sym.line) {
+            const oldBody = oldLines.slice(old.line - 1, old.endLine).join('\n');
+            const newBody = currentLines.slice(sym.line - 1, sym.endLine).join('\n');
+            if (oldBody !== newBody) {
+              modifiedSymbols.push(name);
+            }
+          } else if (old.line !== sym.line) {
             modifiedSymbols.push(name);
           }
         }
 
-        for (const [name, sym] of oldSymMap) {
+        for (const [name] of oldSymMap) {
           if (!newSymMap.has(name)) {
             removedSymbols.push(name);
           }
@@ -149,6 +169,9 @@ export async function getChangedSymbols(
       } else if (currentContent && (status === 'added' || status === 'untracked')) {
         const parsed = parseFile(fullCurrentPath, currentContent);
         addedSymbols = parsed.symbols.map(s => s.name);
+      } else if (oldContent && status === 'deleted') {
+        const parsed = parseFile(fullCurrentPath, oldContent);
+        removedSymbols = parsed.symbols.map(s => s.name);
       }
 
       changedFiles.push({

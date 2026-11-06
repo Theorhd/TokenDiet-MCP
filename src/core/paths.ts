@@ -20,9 +20,22 @@ export function toPosix(filePath: string): string {
 
 /** Canonicalize and resolve a project root */
 export function resolveRoot(root?: string): string {
-  const candidate = root ?? process.env.INIT_CWD ?? process.cwd();
+  const trimmedRoot = root?.trim();
+  const cwd = process.cwd();
+  const fallbackCwd = cwd !== '/' && !/^[A-Za-z]:\\?$/.test(cwd) ? cwd : (process.env.PWD || cwd);
+  const candidate =
+    trimmedRoot ||
+    process.env.TOKENDIET_ROOT ||
+    process.env.WORKSPACE_FOLDER_PATHS?.split(',')[0]?.trim() ||
+    process.env.INIT_CWD ||
+    fallbackCwd;
   const expanded = expandHome(candidate);
   const resolved = resolve(expanded);
+  if (resolved === '/' || /^[A-Za-z]:\\?$/.test(resolved)) {
+    throw new Error(
+      `Refusing to index filesystem root (${resolved}). Please provide the "root" parameter with the absolute path to your project directory.`,
+    );
+  }
   if (!existsSync(resolved)) {
     throw new Error(`Project root does not exist: ${resolved}`);
   }

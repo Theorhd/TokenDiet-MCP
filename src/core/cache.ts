@@ -172,7 +172,7 @@ export class CacheManager {
       getMeta: this.db.prepare('SELECT value FROM meta WHERE key = ?'),
       setMeta: this.db.prepare('INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)'),
       getFileMtime: this.db.prepare('SELECT mtime FROM files WHERE path = ?'),
-      getFileUnchanged: this.db.prepare('SELECT mtime, size FROM files WHERE path = ?'),
+      getFileUnchanged: this.db.prepare('SELECT mtime, size, precision FROM files WHERE path = ?'),
       upsertFile: this.db.prepare(`
         INSERT OR REPLACE INTO files (path, mtime, size, lang, tier, lines, bytes, precision, purpose)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -200,11 +200,13 @@ export class CacheManager {
         SELECT from_module, names, is_external, is_default
         FROM imports WHERE file_path = ?
       `),
-      getAllFiles: this.db.prepare('SELECT path, lang, bytes FROM files'),
+      getAllFiles: this.db.prepare('SELECT path, lang, bytes, lines FROM files'),
       getFilesWithSymbols: this.db.prepare(`
-        SELECT DISTINCT f.path, f.lang, f.lines
+        SELECT f.path, f.lang, f.lines,
+               COALESCE(SUM(CASE WHEN s.exported = 1 THEN 1 ELSE 0 END), 0) as exportCount
         FROM files f
         JOIN symbols s ON f.path = s.file_path
+        GROUP BY f.path
       `),
       getFilesByExt: this.db.prepare(`
         SELECT path, lang, lines, bytes FROM files
@@ -265,9 +267,10 @@ export class CacheManager {
     return row ? row.mtime : null;
   }
 
-  isFileUnchanged(path: string, mtime: number, size: number): boolean {
-    const row = this.stmts.getFileUnchanged.get(path) as { mtime: number; size: number } | undefined;
+  isFileUnchanged(path: string, mtime: number, size: number, requireFullPrecision = false): boolean {
+    const row = this.stmts.getFileUnchanged.get(path) as { mtime: number; size: number; precision?: string } | undefined;
     if (!row) return false;
+    if (requireFullPrecision && row.precision === 'approx') return false;
     return Math.abs(row.mtime - mtime) < 0.001 && row.size === size;
   }
 
@@ -284,7 +287,7 @@ export class CacheManager {
     imports: ImportInfo[] = [],
     purpose: string = '',
   ): void {
-    if (this.isFileUnchanged(path, mtime, size)) {
+    if (this.isFileUnchanged(path, mtime, size, precision === 'full')) {
       return;
     }
 
@@ -396,12 +399,12 @@ export class CacheManager {
     };
   }
 
-  getAllFiles(): Array<{ path: string; lang: string; bytes: number }> {
-    return this.stmts.getAllFiles.all() as Array<{ path: string; lang: string; bytes: number }>;
+  getAllFiles(): Array<{ path: string; lang: string; bytes: number; lines: number }> {
+    return this.stmts.getAllFiles.all() as Array<{ path: string; lang: string; bytes: number; lines: number }>;
   }
 
-  getFilesWithSymbols(): Array<{ path: string; lang: string; lines: number }> {
-    return this.stmts.getFilesWithSymbols.all() as Array<{ path: string; lang: string; lines: number }>;
+  getFilesWithSymbols(): Array<{ path: string; lang: string; lines: number; exportCount: number }> {
+    return this.stmts.getFilesWithSymbols.all() as Array<{ path: string; lang: string; lines: number; exportCount: number }>;
   }
 
   getFilesByExt(ext: string): Array<{ path: string; lang: string; lines: number; bytes: number }> {
@@ -447,7 +450,7 @@ export class CacheManager {
     }
 
     if (filePattern) {
-      const globPattern = filePattern.replace(/\*/g, '%');
+      const globPattern = escapeLike(filePattern).replace(/\*/g, '%');
       sql += ` AND s.file_path LIKE ? ESCAPE '\\'`;
       params.push(globPattern);
     }

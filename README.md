@@ -79,7 +79,7 @@ npm run install:opencode
 
 ---
 
-## Tools (16 total)
+## Tools (19 total)
 
 | # | Tool | Purpose |
 |---|------|---------|
@@ -87,18 +87,21 @@ npm run install:opencode
 | 1 | `get_project_summary` | High-level overview: languages, frameworks, build system, structure |
 | 2 | `get_directory_tree` | Visual tree with file types, sizes, entry points (.gitignore-aware) |
 | 3 | `get_file_overview` | Symbol signatures (exports, classes, functions) — no implementation |
-| 4 | `get_module_graph` | Import/export dependency graph, hubs, cycles |
+| 4 | `get_module_graph` | Import/export dependency graph, hubs, and Tarjan SCC cycles |
 | 5 | `search_symbols` | Find symbols by name across the project |
 | 6 | `get_config_digest` | Summarized config files (package.json, tsconfig, Cargo.toml, etc.) |
 | 7 | `get_entry_points` | Main files, CLI commands, API routes, test directories |
 | 8 | `get_architecture_notes` | Architecture docs, ADRs, design notes — excerpts not full docs |
-| 9 | `refresh_index` | Force full re-index after major changes |
+| 9 | `refresh_index` | Force incremental/full re-index after major changes |
 | 10 | `find_dead_code` | Detect unused exports and files with no incoming imports |
 | 11 | `get_symbol_body` | 🎯 Extract only the implementation body & doc of a specific function/class |
 | 12 | `get_type_definitions` | 🧬 Extract and aggregate all types, interfaces, structs, and schemas |
 | 13 | `get_symbol_references` | 🔍 Find all usages and references of a symbol across the codebase |
 | 14 | `get_changed_symbols` | 📝 Semantic Git diff: added, modified, and removed symbols per file |
-| 15 | `get_folded_file` | ✂️ File outline with folded implementation bodies ({ /* ... N lines */ }) |
+| 15 | `get_folded_file` | ✂️ File outline with folded implementation bodies (`{ /* ... N lines */ }`) |
+| 16 | `get_impact_analysis` | 💥 Reverse dependency blast radius & impacted test suites for any file/module |
+| 17 | `get_diff_summary` | 📊 Semantic diff summary combining symbol changes and downstream impact |
+| 18 | `get_workspaces` | 📦 Monorepo workspace detector (pnpm, npm/yarn, turbo, lerna, cargo, go.work) |
 
 ## Agent Usage Workflow
 
@@ -106,25 +109,28 @@ When an AI agent explores and works on a project, it should call tools in this o
 
 ```
 0. get_global_project      ← ⚡ ALWAYS FIRST. One call = summary + tree + configs + entry points
-1. search_symbols          ← Find specific code by name
-2. get_file_overview       ← Understand file structure & exports (signatures only)
-3. get_type_definitions    ← Inspect shared interfaces, types, and data models
-4. get_symbol_body         ← Read ONLY the function/class implementation needed
-5. get_symbol_references   ← Check who calls or depends on a symbol
-6. get_module_graph        ← Trace project-wide module dependencies
-7. get_folded_file         ← View full file skeleton with collapsed implementations
-8. get_changed_symbols     ← Review semantic git changes before commit
-9. find_dead_code          ← Detect unused exports and dead files
-10. refresh_index          ← Re-index after major changes
+1. get_workspaces          ← Inspect monorepo packages & topology (if applicable)
+2. search_symbols          ← Find specific code by name
+3. get_file_overview       ← Understand file structure & exports (signatures only)
+4. get_type_definitions    ← Inspect shared interfaces, types, and data models
+5. get_symbol_body         ← Read ONLY the function/class implementation needed
+6. get_symbol_references   ← Check who calls or depends on a symbol
+7. get_impact_analysis     ← Check reverse dependencies & impacted tests before editing
+8. get_module_graph        ← Trace project-wide module dependencies & cycles
+9. get_folded_file         ← View full file skeleton with collapsed implementations
+10. get_changed_symbols    ← Review semantic git changes before commit
+11. get_diff_summary       ← High-level diff digest with blast radius
+12. find_dead_code         ← Detect unused exports and dead files
+13. refresh_index          ← Re-index after major changes
 ```
 
 See [SKILL.md](./SKILL.md) for the full agent instruction manual.
 
 ## How It Works
 
-1. **Walker** scans the project respecting `.gitignore` (via the `ignore` package)
-2. **Parsers** extract symbols and structure using regex (TypeScript/JS, Python, Go, Rust supported)
-3. **SQLite cache** persists parsed results in `~/Library/Caches/tokendiet/<hash>.db`
+1. **Walker** scans the project respecting `.gitignore` (via the `ignore` package) and enforces path confinement
+2. **Web-Tree-Sitter AST + Worker Pool** extracts exact AST symbols, docstrings, line bounds, and imports across 10 languages (TypeScript, TSX, JavaScript, Python, Go, Rust, Java, C#, Ruby, PHP) with regex fallback
+3. **SQLite WAL Cache** persists parsed results in `~/Library/Caches/tokendiet/<hash>.db` with incremental mtime/size/precision checks
 4. **Tools** query the cache and return compact JSON optimized for AI consumption
 
 ## Token Savings

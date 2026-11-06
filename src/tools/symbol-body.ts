@@ -1,7 +1,8 @@
 import { resolveRoot, displayPath, resolveSecurePath } from '../core/paths.js';
 import { readFileSafe } from '../core/utils.js';
 import { parseFile } from '../parsers/index.js';
-import type { SymbolBodyOutput, SymbolKind } from '../types/index.js';
+import { treeSitterManager } from '../parsers/treesitter.js';
+import type { SymbolBodyOutput } from '../types/index.js';
 import type { CacheManager } from '../core/cache.js';
 
 export interface SymbolBodyOptions {
@@ -24,6 +25,12 @@ export async function getSymbolBody(
     throw new Error(`File not found: ${filePath}`);
   }
 
+  try {
+    await treeSitterManager.init();
+  } catch {
+    // Fallback to regex
+  }
+
   const lines = content.split('\n');
   const parsed = parseFile(filePath, content);
   const targetSym = parsed.symbols.find(s => s.name === targetName || s.name.endsWith(`.${targetName}`) || s.name.endsWith(`::${targetName}`));
@@ -37,7 +44,9 @@ export async function getSymbolBody(
 
   let endLineIdx = startLineIdx;
 
-  if (isPython) {
+  if (targetSym.endLine && targetSym.endLine > targetSym.line) {
+    endLineIdx = Math.min(lines.length, targetSym.endLine);
+  } else if (isPython) {
     const startIndent = lines[startLineIdx]?.search(/\S/) ?? 0;
     endLineIdx = startLineIdx + 1;
     for (let i = startLineIdx + 1; i < lines.length; i++) {
